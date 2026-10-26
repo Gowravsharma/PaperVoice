@@ -1,0 +1,11 @@
+{
+  "name": "viewer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-along PDF viewer for PaperVoice (PDF.js)",
+  "license": "GPL-3.0-or-later",
+  "type": "commonjs",
+  "dependencies": {
+    "pdfjs-dist": "^4.10.38"
+  }
+}

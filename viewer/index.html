@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PaperVoice</title>
+  <link rel="stylesheet" href="/viewer/viewer.css">
+</head>
+<body>
+  <header class="bar">
+    <label class="btn open" title="Open a PDF (or drop it on the page)">
+      Open PDF<input id="file" type="file" accept="application/pdf" hidden>
+    </label>
+    <span id="name" class="name">No document</span>
+    <div class="controls">
+      <button id="prev" class="btn icon" title="Previous sentence (←)" aria-label="Previous sentence">⏮</button>
+      <button id="play" class="btn icon primary" title="Play / pause (Space)" aria-label="Play">▶</button>
+      <button id="next" class="btn icon" title="Next sentence (→)" aria-label="Next sentence">⏭</button>
+      <label class="speed" title="Speaking speed (− / +)">
+        Speed <input id="speed" type="range" min="0.6" max="1.6" step="0.05" value="0.8">
+        <output id="speedOut">0.80×</output>
+      </label>
+      <label class="follow" title="What to highlight while reading (H to switch)">
+        Highlight
+        <select id="highlight">
+          <option value="sentence">Sentence</option>
+          <option value="word">Word</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <div class="zoom" role="group" aria-label="Zoom">
+        <button id="zoomOut" class="btn icon" title="Zoom out (Ctrl+− or Ctrl+scroll)" aria-label="Zoom out">−</button>
+        <button id="zoomReset" class="btn" title="Fit the width (Ctrl+0)">100%</button>
+        <button id="zoomIn" class="btn icon" title="Zoom in (Ctrl++ or Ctrl+scroll)" aria-label="Zoom in">+</button>
+      </div>
+      <label class="follow" title="Keep the spoken sentence in view">
+        <input id="follow" type="checkbox" checked> Follow
+      </label>
+    </div>
+    <span id="status" class="status">Starting…</span>
+  </header>
+  <main id="pages" class="pages">
+    <div id="empty" class="empty">
+      <p><strong>Open a PDF</strong> or drop one here.</p>
+      <p><strong>Ctrl+click</strong> anywhere in the text to start reading from that point (a plain click selects text, so you can copy as usual). Space plays or pauses.</p>
+    </div>
+  </main>
+  <script type="module" src="/viewer/viewer.js"></script>
+</body>
+</html>

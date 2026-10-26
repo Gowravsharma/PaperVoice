@@ -1,0 +1,49 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Benchmark venvs and large model files
+.venv-export
+models/*.onnx
+node_modules/
+
+# Generated output, debug renders, local test documents (copyrighted papers are not redistributed)
+out/
+debug/
+crops/
+papers/
+test_papers/
+*.pdf
+*.wav
+
+# Models are downloaded/exported, not committed (sizes exceed GitHub limits)
+models/
+
+# third-party paper sources used as ground truth (not ours to redistribute)
+refs/arxiv_*/
+
+# release archives (bench/package_models.py)
+dist/
+
+# personal scratch and notes (kept locally)
+test.py
+output.md
+fast-speec_2.md
+context/
+# ground truth derived from third-party papers (benchmarks only)
+refs/
+# local benchmark environments
+bench/.venv*/
+
+# packed extension and its PRIVATE signing key (never publish the .pem)
+*.pem
+*.crx
+
+docs/RELEASING.md

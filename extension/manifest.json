@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "PaperVoice - listen to research papers",
+  "short_name": "PaperVoice",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxYjxAKwbh6PJaemMonUzTE2j8YAcgfgdn1ixK+ckRzI5kxlwfyU4Rqsg2Jtj+GIrf3F92IRkDKsEkJ5lXmOcp1QkK8J11FdK9lXWJZq1GB11Ymx8VVdq9iYL9/Ch7N8iu1TLUmOWiSAxLTqKCigK3HpeJxxt8dCnL0/PQZCW9qzVJVInAAQ4QdhvrkcqJw5JQb7EQ/Y/TIjLXcDJX/35Blwa5G4cXVl0F8fPG+MkKWSUvoJq4NOKTvy43n5+KHvbmA/SNSK7B2G6n57PO5JAaRqGlR7jEPBh66eNH0ay8iID0idiN08NpZIAuKgd0RQjbDOtSp5CMvuxqwDY7FRz0wIDAQAB",
+  "description": "Listen to the PDF in this tab, maths and tables included, with each sentence highlighted. Runs on your own computer.",
+  "action": {
+    "default_title": "PaperVoice: read this PDF aloud",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*"
+  ]
+}

@@ -1,0 +1,69 @@
+:root {
+  --bg: #e9ebee; --bar: #ffffff; --ink: #1f2328; --muted: #5f6670; --line: #d4d8dd;
+  --accent: #1a5fb4; --accent-ink: #ffffff;
+  --speaking: rgba(255, 196, 0, 0.42); --speaking-sentence: rgba(255, 196, 0, 0.24); --block: rgba(26, 95, 180, 0.07); --block-line: rgba(26, 95, 180, 0.55);
+  --page-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1d21; --bar: #24272c; --ink: #e8eaed; --muted: #a2a9b1; --line: #3a3f46;
+    --accent: #6ea8fe; --accent-ink: #0b1220;
+    --speaking: rgba(255, 196, 0, 0.45); --speaking-sentence: rgba(255, 196, 0, 0.22); --block: rgba(110, 168, 254, 0.10); --block-line: rgba(110, 168, 254, 0.7);
+    --page-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex; flex-direction: column; }
+
+.bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 16px; background: var(--bar);
+  border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
+.name { font-weight: 600; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.controls { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.status { color: var(--muted); font-size: 13px; min-width: 16ch; text-align: right; }
+.btn { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px;
+  padding: 6px 12px; font: inherit; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.icon { width: 36px; padding: 6px 0; text-align: center; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.open { font-weight: 600; }
+.speed, .follow { display: flex; align-items: center; gap: 6px; color: var(--muted); margin-left: 8px; }
+.zoom { display: flex; align-items: center; gap: 2px; margin-left: 8px; }
+.zoom #zoomReset { min-width: 6ch; font-variant-numeric: tabular-nums; }
+.speed input { width: 110px; accent-color: var(--accent); }
+.follow select { font: inherit; color: var(--ink); background: var(--bar); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 6px; }
+.speed output { font-variant-numeric: tabular-nums; min-width: 4.5ch; color: var(--ink); }
+
+.pages { flex: 1; overflow: auto; padding: 24px 16px 80px; display: flex; flex-direction: column;
+  align-items: center; gap: 18px; }
+.pages.drop { outline: 3px dashed var(--accent); outline-offset: -12px; }
+.empty { margin: auto; text-align: center; color: var(--muted); max-width: 46ch; }
+.empty strong { color: var(--ink); }
+
+.page { position: relative; background: #fff; box-shadow: var(--page-shadow); flex: none; }
+.page canvas { display: block; width: 100%; height: 100%; }
+.page .num { position: absolute; top: -18px; left: 0; font-size: 12px; color: var(--muted); }
+.page .marks { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+/* the word (or symbol) being spoken */
+.page .word { position: absolute; background: var(--speaking); border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(200, 150, 0, 0.35); }
+/* fallback when the words cannot be located (tables, pages without a text layer): a light box */
+.page .mark { position: absolute; background: var(--block); border-left: 3px solid var(--block-line); border-radius: 2px; }
+.page .word.sentence { background: var(--speaking-sentence); }
+/* Highlight switched off: hidden but still laid out, so Follow can keep scrolling to the spoken word */
+.pages.no-highlight .word, .pages.no-highlight .mark { visibility: hidden; }
+.page .preparing { position: absolute; inset: 0; display: grid; place-items: center; color: #5f6670;
+  background: rgba(255, 255, 255, 0.6); font-size: 13px; z-index: 3; pointer-events: none; }
+
+/* PDF.js text layer (from pdfjs-dist/web/pdf_viewer.css, trimmed) */
+.textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1;
+  text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; z-index: 1; }
+.textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text;
+  transform-origin: 0% 0%; }
+.textLayer span.markedContent { top: 0; height: 0; }
+.textLayer ::selection { background: rgba(26, 95, 180, 0.25); }
+body.ctrl-read .textLayer :is(span, br) { cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .page .mark { transition: none; } }

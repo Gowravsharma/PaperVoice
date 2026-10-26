@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PaperVoice</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="" width="20" height="20">
+    <h1>PaperVoice</h1>
+    <span id="server" class="dot" title="Local reading engine"></span>
+  </header>
+
+  <p id="message" role="status">Checking this tab…</p>
+
+  <button id="read" class="primary" hidden>Read this PDF aloud</button>
+  <button id="viewer" hidden>Open the reader to choose a file</button>
+  <button id="stop" class="quiet" hidden title="Frees its memory; the next click starts it again">Stop the reading engine</button>
+
+  <details id="help" hidden>
+    <summary>Let the extension start the reading engine</summary>
+    <p>Once, in the project folder, run:</p>
+    <pre><code>uv run papervoice-setup</code></pre>
+    <p>Then click this icon again. From then on the engine starts by itself and stops after a while without use.
+      (Or start it yourself: <code>uv run papervoice-server</code>.)</p>
+  </details>
+
+  <p id="file-hint" class="muted" hidden>
+    For a PDF opened from your disk, allow file access: Extensions → PaperVoice → Details →
+    <em>Allow access to file URLs</em>.
+  </p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
