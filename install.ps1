@@ -14,10 +14,16 @@
 # Undo: uv run papervoice-setup --remove, then delete the folder.
 
 # -Update: refresh the code of this copy first (git pull, or the repository's zip laid over it; models\ and the
-# user's data are kept), then do the same steps. update.bat runs it. -Refreshed is only for the second pass, below.
-param([switch]$Update, [switch]$Refreshed)
+# user's data are kept), then do the same steps - but only if there is something new (-Force: anyway). update.bat
+# runs it. -Refreshed is only for the second pass, below.
+param([switch]$Update, [switch]$Refreshed, [switch]$Force)
 
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 draws a progress bar for every download and is up to 40x slower for it (a 36 MB file:
+# 41 s with the bar, 1 s without; measured) - far worse on a slow computer. Turn it off for the whole script.
+$ProgressPreference = "SilentlyContinue"
+# older Windows 10 offers only TLS 1.0/1.1 by default; nodejs.org, GitHub and astral.sh need 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $Repo = "Gowravsharma/PaperVoice"                    # the GitHub repository (owner/name) to download from
 $Target = Join-Path $env:USERPROFILE "PaperVoice"  # where a download goes
 
@@ -34,12 +40,46 @@ function Refresh-Path {
   $env:Path = "$machine;$user;$(Join-Path $env:USERPROFILE '.local\bin')"
 }
 function Has($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+function Download($url, $out) {
+  # curl.exe (in Windows 10 and later) shows a progress bar of its own, retries, and gives up on a stalled
+  # connection (under 1 KB/s for 60 s); without it, Invoke-WebRequest with a time limit
+  $name = Split-Path $url -Leaf
+  Write-Host "Downloading $name ..."
+  $t = Get-Date
+  $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+  if (Test-Path $curl) {
+    & $curl -L --fail --retry 3 --retry-delay 3 --connect-timeout 20 --speed-limit 1000 --speed-time 60 --progress-bar -o $out $url
+    if ($LASTEXITCODE -ne 0) { Fail "the download of $url failed (curl exit code $LASTEXITCODE). Check the internet connection and run this again." }
+  } else {
+    try { Invoke-WebRequest $url -OutFile $out -UseBasicParsing -TimeoutSec 900 }
+    catch { Fail "the download of $url failed: $($_.Exception.Message). Check the internet connection and run this again." }
+  }
+  Write-Host ("  done in {0} s" -f [int]((Get-Date) - $t).TotalSeconds)
+}
 function Get-Version($app) {
   try { return (Get-Content (Join-Path $app "version.json") -Raw | ConvertFrom-Json).version } catch { return "unknown" }
 }
 function Stop-Engine {
   # a running engine holds files of the install (python.exe in .venv) that an update replaces
   try { Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8765/api/shutdown" -TimeoutSec 3 | Out-Null; Start-Sleep -Seconds 2 } catch { }
+}
+function Newer-Available($app) {
+  # $true / $false: is there a newer version than this copy? A git copy compares commits (so a fix pushed without a
+  # version bump counts); a zip copy compares version.json with GitHub's. PAPERVOICE_VERSION_URL replaces the
+  # address (a mirror, or testing). $null: could not tell.
+  try {
+    if (Test-Path (Join-Path $app ".git")) {
+      if (-not (Has "git")) { return $null }
+      & git -C $app fetch --quiet 2>$null
+      if ($LASTEXITCODE -ne 0) { return $null }
+      $behind = & git -C $app rev-list --count "HEAD..@{u}" 2>$null
+      if ($LASTEXITCODE -ne 0) { return $null } # no upstream set: let the pull decide
+      return ([int]$behind -gt 0)
+    }
+    $url = if ($env:PAPERVOICE_VERSION_URL) { $env:PAPERVOICE_VERSION_URL } else { "https://raw.githubusercontent.com/$Repo/main/version.json" }
+    $latest = (Invoke-RestMethod $url -TimeoutSec 30).version
+    return ([version]$latest -gt [version](Get-Version $app))
+  } catch { return $null }
 }
 function Overlay-Zip($app) {
   # the repository's files laid over the folder: new and changed files replace the old ones; models\, out\, tools\,
@@ -48,7 +88,7 @@ function Overlay-Zip($app) {
   $url = if ($env:PAPERVOICE_ZIP_URL) { $env:PAPERVOICE_ZIP_URL } else { "https://github.com/$Repo/archive/refs/heads/main.zip" }
   $zip = Join-Path $env:TEMP "papervoice.zip"
   $tmp = Join-Path $env:TEMP "papervoice-unpacked"
-  Invoke-WebRequest $url -OutFile $zip -UseBasicParsing
+  Download $url $zip
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
   [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp)
@@ -65,7 +105,7 @@ if ($env:OS -ne "Windows_NT") { Fail "this installer is for Windows. On macOS/Li
 Step "Checking uv"
 if (-not (Has "uv")) {
   Write-Host "Installing uv (https://docs.astral.sh/uv/)..."
-  Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+  Invoke-RestMethod https://astral.sh/uv/install.ps1 -TimeoutSec 60 | Invoke-Expression
   Refresh-Path
   if (-not (Has "uv")) { Fail "uv was installed but is not found. Open a new PowerShell window and run this again." }
 }
@@ -79,7 +119,20 @@ $here = if ($PSScriptRoot) { $PSScriptRoot } else { "" }
 if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
   $App = $here
   if ($Update -and -not $Refreshed) {
-    Step "Updating PaperVoice (now $(Get-Version $App))"
+    $now = Get-Version $App
+    Step "Looking for a newer version (this copy: $now)"
+    $installed = Test-Path (Join-Path $App ".venv\Scripts\python.exe")
+    $newer = Newer-Available $App
+    if ($installed -and -not $Force) {
+      if ($newer -eq $false) {
+        Write-Host "PaperVoice $now is already the newest version. Nothing to update." -ForegroundColor Green
+        Write-Host "(To reinstall it anyway: update.bat -Force)"
+        exit 0
+      }
+      if ($null -eq $newer) { Write-Host "Could not check (no internet?): updating anyway." }
+    }
+    if ($newer) { Write-Host "A newer version is available." }
+    Step "Updating PaperVoice"
     Stop-Engine
     if (Test-Path (Join-Path $App ".git")) {
       if (-not (Has "git")) { Fail "this folder came from git but git is not installed." }
@@ -121,13 +174,13 @@ if (-not $nodeOk -and (Test-Path (Join-Path $privateNode "node.exe"))) {
 if (-not $nodeOk) {
   Write-Host "Node.js 18+ is not installed: downloading a private copy (about 30 MB) from nodejs.org..."
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
-  $index = Invoke-RestMethod "https://nodejs.org/dist/index.json"
+  $index = Invoke-RestMethod "https://nodejs.org/dist/index.json" -TimeoutSec 60
   $release = $index | Where-Object { $_.lts -and ($_.files -contains "win-$arch-zip") } | Select-Object -First 1
   if (-not $release) { Fail "could not find a Node.js release for this computer: install the LTS version from https://nodejs.org, then run this again." }
   $name = "node-$($release.version)-win-$arch"
   $zip = Join-Path $env:TEMP "$name.zip"
-  Invoke-WebRequest "https://nodejs.org/dist/$($release.version)/$name.zip" -OutFile $zip -UseBasicParsing
-  $sums = (Invoke-WebRequest "https://nodejs.org/dist/$($release.version)/SHASUMS256.txt" -UseBasicParsing).Content
+  Download "https://nodejs.org/dist/$($release.version)/$name.zip" $zip
+  $sums = (Invoke-WebRequest "https://nodejs.org/dist/$($release.version)/SHASUMS256.txt" -UseBasicParsing -TimeoutSec 60).Content
   $want = ($sums -split "`n" | Where-Object { $_ -match "  $name\.zip\s*$" } | Select-Object -First 1).Split(" ")[0]
   $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
   if (-not $want -or $got -ne $want) { Remove-Item $zip -Force; Fail "the Node.js download did not match its checksum: run this again." }
@@ -146,6 +199,8 @@ if (-not $nodeOk) {
 Write-Host "Node.js: $(node --version)"
 
 # 3. its parts -----------------------------------------------------------------------------------------------------
+# a copy that was only downloaded or cloned and never installed is installed, not updated (what the last step says)
+$asUpdate = $Update -and (Test-Path (Join-Path $App ".venv\Scripts\python.exe"))
 Stop-Engine
 Step "Installing the Python parts (uv sync)"
 Run "uv" @("sync", "--locked")
@@ -164,7 +219,7 @@ Run "uv" @("run", "--no-sync", "papervoice-setup")
 
 # the extension -------------------------------------------------------------------------------------------------------
 $ext = Join-Path $App "extension"
-if ($Update) {
+if ($asUpdate) {
   Step "Last step: reload the extension"
   Write-Host "  On the extensions page that opens, click the reload icon on the PaperVoice card."
   Write-Host "  (Then click the PaperVoice icon on a PDF as usual: the reading engine starts with the new code.)"
@@ -183,4 +238,4 @@ $chromeExe = Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"
 if ($env:PAPERVOICE_NO_BROWSER) { } # (tests: no browser tab, clipboard untouched)
 elseif (Test-Path $chromeExe) { Start-Process $chromeExe "chrome://extensions" }
 elseif ($edge -or (Test-Path $edgeExe)) { Start-Process $(if ($edge) { $edge.Source } else { $edgeExe }) "edge://extensions" }
-Write-Host "PaperVoice $(Get-Version $App) is $(if ($Update) { 'updated' } else { 'installed' }) in $App" -ForegroundColor Green
+Write-Host "PaperVoice $(Get-Version $App) is $(if ($asUpdate) { 'updated' } else { 'installed' }) in $App" -ForegroundColor Green
