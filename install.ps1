@@ -2,7 +2,7 @@
 #
 #   One line, in PowerShell:   irm https://raw.githubusercontent.com/Gowravsharma/PaperVoice/main/install.ps1 | iex
 #   Or, in a downloaded copy:  powershell -ExecutionPolicy Bypass -File install.ps1
-#
+# ---------
 # What it does (each step is skipped when already done, so running it again updates the install):
 #   1. uv (Python manager, installs Python by itself), if missing - from its official installer
 #   2. the PaperVoice code: this folder if the script is run from a copy, else a download to %USERPROFILE%\PaperVoice
