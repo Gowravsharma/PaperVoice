@@ -4,9 +4,10 @@
 #   Or, in a downloaded copy:  powershell -ExecutionPolicy Bypass -File install.ps1
 #
 # What it does (each step is skipped when already done, so running it again updates the install):
-#   1. uv (Python manager, installs Python by itself) and Node.js 18+, if missing - from their official sources
+#   1. uv (Python manager, installs Python by itself), if missing - from its official installer
 #   2. the PaperVoice code: this folder if the script is run from a copy, else a download to %USERPROFILE%\PaperVoice
-#   3. its Python and JavaScript parts (exactly the tested versions: uv.lock, package-lock.json)
+#   3. Node.js 18+ if missing (a private, checksum-verified copy in tools/node; no admin), then its Python and
+#      JavaScript parts (exactly the tested versions: uv.lock, package-lock.json)
 #   4. the models (~750 MB, checked against their SHA-256), so the first reading does not wait for them
 #   5. the small helper that lets the browser extension start the reader (current user only, no admin)
 # Then it opens the browser's extensions page for the one step a script cannot do: loading the extension.
@@ -33,7 +34,7 @@ function Has($name) { return [bool](Get-Command $name -ErrorAction SilentlyConti
 if ($env:OS -ne "Windows_NT") { Fail "this installer is for Windows. On macOS/Linux follow the README's manual steps." }
 
 # 1. tools ---------------------------------------------------------------------------------------------------------
-Step "Checking uv and Node.js"
+Step "Checking uv"
 if (-not (Has "uv")) {
   Write-Host "Installing uv (https://docs.astral.sh/uv/)..."
   Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
@@ -42,16 +43,7 @@ if (-not (Has "uv")) {
 }
 Write-Host "uv: $(uv --version)"
 
-$nodeOk = $false
-if (Has "node") { $nodeOk = [int]((node --version).TrimStart("v").Split(".")[0]) -ge 18 }
-if (-not $nodeOk) {
-  if (-not (Has "winget")) { Fail "Node.js 18 or newer is needed: install the LTS version from https://nodejs.org, then run this again." }
-  Write-Host "Installing Node.js LTS with winget..."
-  Run "winget" @("install", "--id", "OpenJS.NodeJS.LTS", "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements")
-  Refresh-Path
-  if (-not (Has "node")) { Fail "Node.js was installed but is not found. Open a new PowerShell window and run this again." }
-}
-Write-Host "Node.js: $(node --version)"
+Write-Host "(Node.js is checked after the download, below)"
 
 # 2. the code ------------------------------------------------------------------------------------------------------
 Step "Getting PaperVoice"
@@ -80,6 +72,43 @@ if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
   }
 }
 Set-Location $App
+
+# Node.js: the one installed (18 or newer), else a private copy in tools\node - no winget, no admin, nothing else
+# on the computer is touched (the reader finds it there: script.py node_exe)
+Step "Checking Node.js"
+$nodeOk = $false
+if (Has "node") { $nodeOk = [int]((node --version).TrimStart("v").Split(".")[0]) -ge 18 }
+$privateNode = Join-Path $App "tools\node"
+if (-not $nodeOk -and (Test-Path (Join-Path $privateNode "node.exe"))) {
+  $env:Path = "$privateNode;$env:Path"
+  $nodeOk = $true
+}
+if (-not $nodeOk) {
+  Write-Host "Node.js 18+ is not installed: downloading a private copy (about 30 MB) from nodejs.org..."
+  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+  $index = Invoke-RestMethod "https://nodejs.org/dist/index.json"
+  $release = $index | Where-Object { $_.lts -and ($_.files -contains "win-$arch-zip") } | Select-Object -First 1
+  if (-not $release) { Fail "could not find a Node.js release for this computer: install the LTS version from https://nodejs.org, then run this again." }
+  $name = "node-$($release.version)-win-$arch"
+  $zip = Join-Path $env:TEMP "$name.zip"
+  Invoke-WebRequest "https://nodejs.org/dist/$($release.version)/$name.zip" -OutFile $zip -UseBasicParsing
+  $sums = (Invoke-WebRequest "https://nodejs.org/dist/$($release.version)/SHASUMS256.txt" -UseBasicParsing).Content
+  $want = ($sums -split "`n" | Where-Object { $_ -match "  $name\.zip\s*$" } | Select-Object -First 1).Split(" ")[0]
+  $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+  if (-not $want -or $got -ne $want) { Remove-Item $zip -Force; Fail "the Node.js download did not match its checksum: run this again." }
+  # unzipped in a short temp folder and then moved (a rename): Node's npm has very deep folders, and in a long
+  # install path Expand-Archive stops at Windows' 260-character limit
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $tmp = Join-Path $env:TEMP "papervoice-node"
+  if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp)
+  New-Item -ItemType Directory -Force (Join-Path $App "tools") | Out-Null
+  if (Test-Path $privateNode) { Remove-Item $privateNode -Recurse -Force }
+  Move-Item (Join-Path $tmp $name) $privateNode
+  Remove-Item $tmp, $zip -Recurse -Force
+  $env:Path = "$privateNode;$env:Path"
+}
+Write-Host "Node.js: $(node --version)"
 
 # 3. its parts -----------------------------------------------------------------------------------------------------
 Step "Installing the Python parts (uv sync)"

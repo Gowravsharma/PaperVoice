@@ -18,6 +18,7 @@ Finally every paragraph goes through text_norm.normalize (wetext): numbers, year
 """
 import argparse
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,6 +31,12 @@ from pdf_reader.text_norm import normalize, prose, symbols
 
 ROOT = Path(__file__).resolve().parents[2]
 TEX2SPEECH = ROOT / "speech" / "tex2speech.mjs"
+PRIVATE_NODE = ROOT / "tools" / "node" / "node.exe"  # the copy install.ps1 downloads when Node.js is not installed
+
+
+def node_exe():
+    """Node.js for the maths speech: the one on the PATH, else the private copy install.ps1 put in tools/."""
+    return shutil.which("node") or (str(PRIVATE_NODE) if PRIVATE_NODE.exists() else "node")
 REFERENCES = re.compile(r"^\s*(\d+\.?\s*)?(references|bibliography)\.?\s*$", re.I)
 EQ_NUMBER = re.compile(r"\(\s*\d+(?:\.\d+)*\s*\)")
 SKIP = {DocItemLabel.FOOTNOTE, DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER, DocItemLabel.PICTURE}
@@ -72,7 +79,7 @@ class FormulaSpeaker:
                 continue
             if self.proc is None:
                 # no console window: started from the background server, Windows would open a terminal for it
-                self.proc = subprocess.Popen(["node", str(TEX2SPEECH), "clearspeak", "--serve"],
+                self.proc = subprocess.Popen([node_exe(), str(TEX2SPEECH), "clearspeak", "--serve"],
                                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                                              encoding="utf-8", bufsize=1,
                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

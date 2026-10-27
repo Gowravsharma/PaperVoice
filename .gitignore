@@ -13,6 +13,7 @@ wheels/
 .venv-export
 models/*.onnx
 node_modules/
+tools/
 
 # Generated output, debug renders, local test documents (copyrighted papers are not redistributed)
 out/

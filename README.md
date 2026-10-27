@@ -72,16 +72,20 @@ The full development story, with every measurement and the approaches that were 
 
 ## Install
 
-**Windows, one line** - paste into PowerShell:
+**Windows - no terminal needed:** on the repository page click **Code → Download ZIP**, unzip it, and
+**double-click `install.bat`**. (Or, in a terminal, paste this into **PowerShell**; in Command Prompt `irm` is not
+recognized:)
 
 ```powershell
 irm https://raw.githubusercontent.com/Gowravsharma/PaperVoice/main/install.ps1 | iex
 ```
 
-It installs what is missing (uv, which brings its own Python, and Node.js), downloads PaperVoice to
-`%USERPROFILE%\PaperVoice`, installs exactly the tested versions of its parts, downloads the models (~750 MB,
-once), and lets the extension start the reader. It ends by opening the extensions page for the last step below.
-Run it again to update. (From a downloaded copy: `powershell -ExecutionPolicy Bypass -File install.ps1`.)
+Either way it installs what is missing, with no administrator rights and nothing else on the computer touched: uv
+(which brings its own Python) and, if Node.js 18+ is not installed, a private checksum-verified copy of it inside
+the PaperVoice folder. It puts PaperVoice in `%USERPROFILE%\PaperVoice` (or stays in the unzipped folder), installs
+exactly the tested versions of its parts, downloads the models (~750 MB, once), and lets the extension start the
+reader. It ends by opening the extensions page for the last step below. Run it again to update; it skips what is
+already done.
 
 **By hand** (any system; needs [uv](https://docs.astral.sh/uv/) and Node.js 18+):
 
