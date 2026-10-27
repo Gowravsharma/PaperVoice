@@ -21,6 +21,8 @@ clause / sentence / paragraph / section), plus PAGE_PAUSE after a page. Voices l
 import argparse
 import io
 import queue
+import subprocess
+import sys
 import threading
 import time
 import wave
@@ -36,23 +38,43 @@ PAGE_PAUSE = 0.5  # added after a page, on top of the last unit's own pause (nar
 END = object()
 
 
+def build_aligned_voice(voice):
+    """Make <voice>.aligned.onnx (runs in a child process, see aligned_voice)."""
+    import onnx
+    from piper.patch_voice_with_alignment import add_alignment_output
+    src, dst = VOICES_DIR / f"{voice}.onnx", VOICES_DIR / f"{voice}.aligned.onnx"
+    model = onnx.load(str(src))
+    add_alignment_output(model)
+    tmp = dst.with_suffix(".part")
+    onnx.save(model, str(tmp))
+    tmp.replace(dst)
+
+
 def aligned_voice(voice):
     """<voice>.aligned.onnx: the voice with its per-phoneme durations as a second output (exact word timings,
     timing.word_times_aligned). Made once from the downloaded voice with Piper's patch_voice_with_alignment
-    (needs the onnx package, installed with piper-tts[alignment]); None if that is not possible."""
-    src, dst = VOICES_DIR / f"{voice}.onnx", VOICES_DIR / f"{voice}.aligned.onnx"
-    if not dst.exists():
-        try:
-            import onnx
-            from piper.patch_voice_with_alignment import add_alignment_output
-            model = onnx.load(str(src))
-            add_alignment_output(model)
-            tmp = dst.with_suffix(".part")
-            onnx.save(model, str(tmp))
-            tmp.replace(dst)
-        except (ImportError, ValueError):
-            return None
-    return dst
+    (needs the onnx package, installed with piper-tts[alignment]). None if that is not possible - the voice then
+    reads as before and word highlighting uses estimated timings.
+    It is built in a child process: it is a nicety, and a native library (onnx/protobuf) that crashes the process
+    on some computer (an access violation, no Python error to catch) must not take the install or the reader down
+    with it. A failure is remembered in <voice>.aligned.failed, so it is not tried at every start."""
+    dst = VOICES_DIR / f"{voice}.aligned.onnx"
+    failed = dst.with_suffix(".failed")
+    if dst.exists():
+        return dst
+    if failed.exists():
+        return None
+    code = f"from pdf_reader.read_aloud import build_aligned_voice; build_aligned_voice({voice!r})"
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if run.returncode == 0 and dst.exists():
+        return dst
+    dst.with_suffix(".part").unlink(missing_ok=True)
+    detail = (run.stderr or "").strip().splitlines()[-3:]
+    failed.write_text("\n".join([f"exit code {run.returncode}", *detail]), encoding="utf-8")
+    print(f"note: the voice with exact word timing could not be made (exit code {run.returncode}); reading works, "
+          f"word highlighting uses estimated timing. Details: {failed}", flush=True)
+    return None
 
 
 class Narrator:

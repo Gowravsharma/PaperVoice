@@ -543,6 +543,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global SERVER
+    from pdf_reader.models import report_crashes
+    report_crashes()
     ap = argparse.ArgumentParser(description="Local server for the PDF reader viewer / extension")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--idle-exit", type=float, default=20,

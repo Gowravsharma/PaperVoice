@@ -90,7 +90,68 @@ async function startEngine() {
   return false;
 }
 
+// Update notice. The only request this extension makes to the internet: version.json from the project's GitHub
+// repository (a few bytes; GitHub sees the address like for any web page), at most every 12 hours, and it can be
+// switched off below. Nothing about the user or their papers is sent. Updating itself is done by update.bat.
+const VERSION_URL = "https://raw.githubusercontent.com/Gowravsharma/PaperVoice/main/version.json";
+const CHECK_EVERY = 12 * 3600 * 1000;
+
+function store(key, value) { // localStorage can be unavailable (private windows, blocked site data)
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch { /* the check then simply runs each time */ }
+  return null;
+}
+
+function newer(latest, installed) { // "1.10.0" > "1.9.2"
+  const a = String(latest).split(".").map(Number), b = String(installed).split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d > 0;
+  }
+  return false;
+}
+
+async function latestVersion() {
+  const cached = JSON.parse(store("papervoice.latest") || "null");
+  if (cached && Date.now() - cached.at < CHECK_EVERY) return cached.version;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 4000);
+  try {
+    const r = await fetch(VERSION_URL, { cache: "no-store", signal: ctl.signal });
+    if (!r.ok) return cached?.version ?? null;
+    const version = String((await r.json()).version || "");
+    if (!/^\d+(\.\d+)*$/.test(version)) return null;
+    store("papervoice.latest", JSON.stringify({ at: Date.now(), version }));
+    return version;
+  } catch {
+    return cached?.version ?? null; // offline: no notice, nothing else changes
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function showVersion() {
+  const installed = chrome.runtime.getManifest().version;
+  const on = store("papervoice.updatecheck") !== "off";
+  $("version").textContent = `PaperVoice ${installed} · `;
+  const toggle = document.createElement("a");
+  toggle.textContent = on ? "update check: on" : "update check: off";
+  toggle.title = "Looks for a new version on GitHub at most every 12 hours. Click to switch.";
+  toggle.addEventListener("click", () => { store("papervoice.updatecheck", on ? "off" : "on"); location.reload(); });
+  $("version").append(toggle);
+  if (!on) return;
+  const latest = await latestVersion();
+  if (latest && newer(latest, installed)) {
+    $("update").textContent = `Version ${latest} is available (you have ${installed}). To update: double-click ` +
+      "update.bat in the PaperVoice folder, then reload the extension on the extensions page.";
+    $("update").hidden = false;
+  }
+}
+
 async function main() {
+  showVersion(); // not awaited: it must never delay reading
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const up = await startEngine();
   $("server").className = `dot ${up ? "ok" : "bad"}`;

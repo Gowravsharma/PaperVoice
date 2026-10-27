@@ -102,6 +102,18 @@ On its first start the reader downloads its models by itself (once, ~750 MB, all
 against the SHA-256 of the files it was tested with, so everyone runs exactly the same models. To download them in
 advance instead: `uv run papervoice-models`.
 
+### Updating
+
+When a new version is out, the extension's popup says so ("Version 1.0.1 is available…"). To update, **double-click
+`update.bat`** in the PaperVoice folder (or run the one-line install command again), then click the reload icon on
+the PaperVoice card of the extensions page. It stops the reading engine, fetches the new code (`git pull` if the
+folder came from git, otherwise the repository's zip laid over it), installs exactly the new locked versions of the
+parts, checks the models, and keeps your downloaded models and prepared papers. Nothing else needs doing.
+
+The popup's notice makes one small request to GitHub (`version.json`, a few bytes, at most every 12 hours; GitHub
+sees your address like for any web page) - the only time the extension uses the internet. Nothing about you or your
+papers is sent. Switch it off with the **update check** link at the bottom of the popup.
+
 **Uninstall:** `uv run papervoice-setup --remove` in the folder, then delete the folder (and remove the extension).
 
 **About the voice:** the default voice, Piper's "lessac", is trained on recordings licensed for **research use

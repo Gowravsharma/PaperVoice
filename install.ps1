@@ -13,6 +13,10 @@
 # Then it opens the browser's extensions page for the one step a script cannot do: loading the extension.
 # Undo: uv run papervoice-setup --remove, then delete the folder.
 
+# -Update: refresh the code of this copy first (git pull, or the repository's zip laid over it; models\ and the
+# user's data are kept), then do the same steps. update.bat runs it. -Refreshed is only for the second pass, below.
+param([switch]$Update, [switch]$Refreshed)
+
 $ErrorActionPreference = "Stop"
 $Repo = "Gowravsharma/PaperVoice"                    # the GitHub repository (owner/name) to download from
 $Target = Join-Path $env:USERPROFILE "PaperVoice"  # where a download goes
@@ -30,6 +34,30 @@ function Refresh-Path {
   $env:Path = "$machine;$user;$(Join-Path $env:USERPROFILE '.local\bin')"
 }
 function Has($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+function Get-Version($app) {
+  try { return (Get-Content (Join-Path $app "version.json") -Raw | ConvertFrom-Json).version } catch { return "unknown" }
+}
+function Stop-Engine {
+  # a running engine holds files of the install (python.exe in .venv) that an update replaces
+  try { Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8765/api/shutdown" -TimeoutSec 3 | Out-Null; Start-Sleep -Seconds 2 } catch { }
+}
+function Overlay-Zip($app) {
+  # the repository's files laid over the folder: new and changed files replace the old ones; models\, out\, tools\,
+  # .venv and node_modules are not in the zip, so they stay. (A file deleted upstream stays as a harmless leftover.)
+  # PAPERVOICE_ZIP_URL replaces the address - for a mirror, or for testing.
+  $url = if ($env:PAPERVOICE_ZIP_URL) { $env:PAPERVOICE_ZIP_URL } else { "https://github.com/$Repo/archive/refs/heads/main.zip" }
+  $zip = Join-Path $env:TEMP "papervoice.zip"
+  $tmp = Join-Path $env:TEMP "papervoice-unpacked"
+  Invoke-WebRequest $url -OutFile $zip -UseBasicParsing
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp)
+  $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1 # GitHub's zip has one folder, PaperVoice-main
+  if (-not $inner -or -not (Test-Path (Join-Path $inner.FullName "pyproject.toml"))) { Fail "the download is not a PaperVoice zip." }
+  New-Item -ItemType Directory -Force $app | Out-Null
+  Copy-Item (Join-Path $inner.FullName "*") $app -Recurse -Force
+  Remove-Item $zip, $tmp -Recurse -Force
+}
 
 if ($env:OS -ne "Windows_NT") { Fail "this installer is for Windows. On macOS/Linux follow the README's manual steps." }
 
@@ -50,9 +78,24 @@ Step "Getting PaperVoice"
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { "" }
 if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
   $App = $here
+  if ($Update -and -not $Refreshed) {
+    Step "Updating PaperVoice (now $(Get-Version $App))"
+    Stop-Engine
+    if (Test-Path (Join-Path $App ".git")) {
+      if (-not (Has "git")) { Fail "this folder came from git but git is not installed." }
+      Run "git" @("-C", $App, "pull", "--ff-only")
+    } else {
+      Overlay-Zip $App
+    }
+    # the new install.ps1 may have steps this one does not know: carry on with it
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App "install.ps1") -Update -Refreshed
+    exit $LASTEXITCODE
+  }
   Write-Host "Using this copy: $App"
 } else {
   $App = $Target
+  if (Test-Path (Join-Path $App "pyproject.toml")) { $Update = $true } # run again over an existing install
+  if ($Update) { Stop-Engine }
   if (Test-Path (Join-Path $App ".git")) {
     Write-Host "Updating $App ..."
     Run "git" @("-C", $App, "pull", "--ff-only")
@@ -60,15 +103,7 @@ if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
     if (Test-Path $App) { Fail "$App exists and is not a PaperVoice download: move it away and run this again." }
     Run "git" @("clone", "--depth", "1", "https://github.com/$Repo.git", $App)
   } else { # no git: the same files as a zip
-    $zip = Join-Path $env:TEMP "papervoice.zip"
-    $unpacked = Join-Path $env:TEMP "papervoice-unpacked"
-    Invoke-WebRequest "https://github.com/$Repo/archive/refs/heads/main.zip" -OutFile $zip -UseBasicParsing
-    if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
-    Expand-Archive $zip $unpacked
-    $inner = Get-ChildItem $unpacked -Directory | Select-Object -First 1
-    New-Item -ItemType Directory -Force $App | Out-Null
-    Copy-Item (Join-Path $inner.FullName "*") $App -Recurse -Force # an update keeps models\ and out\
-    Remove-Item $zip, $unpacked -Recurse -Force
+    Overlay-Zip $App
   }
 }
 Set-Location $App
@@ -111,6 +146,7 @@ if (-not $nodeOk) {
 Write-Host "Node.js: $(node --version)"
 
 # 3. its parts -----------------------------------------------------------------------------------------------------
+Stop-Engine
 Step "Installing the Python parts (uv sync)"
 Run "uv" @("sync", "--locked")
 Step "Installing the maths speech engine and the PDF viewer (npm ci)"
@@ -126,14 +162,20 @@ Run "uv" @("run", "--no-sync", "papervoice-models")
 Step "Letting the browser extension start the reader"
 Run "uv" @("run", "--no-sync", "papervoice-setup")
 
-# the extension: the one step left -----------------------------------------------------------------------------------
+# the extension -------------------------------------------------------------------------------------------------------
 $ext = Join-Path $App "extension"
-if (-not $env:PAPERVOICE_NO_BROWSER) { Set-Clipboard -Value $ext }
-Step "Last step: add the extension (once)"
-Write-Host "  1. In the page that opens, switch on 'Developer mode'."
-Write-Host "  2. Click 'Load unpacked' and choose this folder (its path is on your clipboard - paste it):"
-Write-Host "       $ext" -ForegroundColor Yellow
-Write-Host "  3. Open any PDF in the browser and click the PaperVoice icon -> 'Read this PDF aloud'."
+if ($Update) {
+  Step "Last step: reload the extension"
+  Write-Host "  On the extensions page that opens, click the reload icon on the PaperVoice card."
+  Write-Host "  (Then click the PaperVoice icon on a PDF as usual: the reading engine starts with the new code.)"
+} else {
+  if (-not $env:PAPERVOICE_NO_BROWSER) { Set-Clipboard -Value $ext }
+  Step "Last step: add the extension (once)"
+  Write-Host "  1. In the page that opens, switch on 'Developer mode'."
+  Write-Host "  2. Click 'Load unpacked' and choose this folder (its path is on your clipboard - paste it):"
+  Write-Host "       $ext" -ForegroundColor Yellow
+  Write-Host "  3. Open any PDF in the browser and click the PaperVoice icon -> 'Read this PDF aloud'."
+}
 Write-Host ""
 $edge = Get-Command msedge -ErrorAction SilentlyContinue
 $edgeExe = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
@@ -141,4 +183,4 @@ $chromeExe = Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"
 if ($env:PAPERVOICE_NO_BROWSER) { } # (tests: no browser tab, clipboard untouched)
 elseif (Test-Path $chromeExe) { Start-Process $chromeExe "chrome://extensions" }
 elseif ($edge -or (Test-Path $edgeExe)) { Start-Process $(if ($edge) { $edge.Source } else { $edgeExe }) "edge://extensions" }
-Write-Host "PaperVoice is installed in $App" -ForegroundColor Green
+Write-Host "PaperVoice $(Get-Version $App) is $(if ($Update) { 'updated' } else { 'installed' }) in $App" -ForegroundColor Green

@@ -1097,6 +1097,40 @@ PowerShell 5.1; **a fresh copy of exactly the 93 files git would push** installs
 `bench/test_server.py` (15/15, 572 MB, no torch) - nothing the reader needs is left out by `.gitignore`. The
 GitHub repository is `Gowravsharma/PaperVoice` (README, install.ps1, the model card); the models stay on Hugging
 Face (`Vibrant8849/PaperVoice`).
+
+**First test on a second computer (Core i3 U, 4 GB):** `papervoice-models` died with exit code -1073741819 (0xC0000005,
+an access violation: a native library crashed, no Python error) right after the last download, in the step that
+builds the voice with exact word timing (`onnx` + `protobuf` on the 60 MB voice). On the development machine that
+step takes 4 s and 387 MB, so memory alone does not explain it; the cause on that computer is not known yet.
+Fixes that hold whatever the cause: the step runs in a **child process** (`read_aloud.aligned_voice`), so a native
+crash only ends the child; the voice then reads with estimated word timing (the server's existing fallback) and
+the failure is remembered in `<voice>.aligned.failed` (checked: a real access violation in the child, a damaged
+voice file, and `bench/test_server.py` without the exact voice - all pass except its one check that demands the
+exact voice); `papervoice-models` and the server turn on `faulthandler`, so a native crash prints the Python line
+it was in; `install.bat` says clearly whether it worked (it printed only "Press any key" after a failure). Libraries
+measured instead of guessed: of 649 MB, scipy/pandas/shapely/lxml/opencv are loaded by Docling and the scan reader
+while reading papers (formulas, tables, a scan, audio) - not removable; what is not loaded (onnx, pywin32,
+hf-xet, psutil, pygments) is under 7 %, not worth overriding what Docling/Piper declare.
+
+**Updates for users.** Before, nothing told a user a new version existed, and `install.bat` from a downloaded zip
+could not update (it installs the copy it sits in). Now:
+- `version.json` (repository root) names the latest version; `bench/check_version.py` checks that it agrees with
+  `pyproject.toml`, `extension/manifest.json` and `uv.lock` (the lock records the package version, and
+  `uv sync --locked` refuses a different one).
+- The popup shows its version and, when GitHub's `version.json` is newer, "Version X is available… double-click
+  update.bat". One request, at most every 12 hours (cached), 4 s timeout, silent when offline, switchable off; no new
+  permission (GitHub allows cross-origin reads). Numbers are compared as numbers (1.10.0 > 1.9.2).
+  `bench/check_update_notice.mjs`: 12 checks in headless Edge with the real extension, GitHub's answer replaced
+  through the DevTools protocol.
+- `update.bat` = `install.ps1 -Update`: stops the engine (`POST /api/shutdown`, it holds files of the install),
+  `git pull --ff-only` or the repository zip laid over the folder (`models\`, `out\`, `tools\`, `.venv` are not in
+  the zip so they stay; a file deleted upstream stays as a harmless leftover), then **continues with the new
+  install.ps1** (a second process, `-Refreshed`), so a release that adds a step works at once. Checked end to end:
+  a zip install with the engine running (stopped, version 1.0.0 → 1.0.1, new and edited files arrived, `models\`
+  and `out\` kept, `uv sync --locked`, `npm ci`, models, helper) and a git install (fast-forward). A first run
+  failed with a missing `dotenv` module - a leftover of the test itself (PowerShell 5.1 cannot delete this deep a
+  folder: its cleanup removed half of an earlier half-installed environment); redone from a really clean folder it
+  passes. The test hook `PAPERVOICE_ZIP_URL` (a mirror, or a local zip) exists for this.
 ---
 
 ## Before / after

@@ -21,6 +21,7 @@ v1.0.0 files and checked like the others. voices/<voice>.aligned.onnx is made fr
 model with its phoneme durations as an output, for exact word highlighting; read_aloud.aligned_voice).
 """
 import argparse
+import faulthandler
 import hashlib
 import os
 import sys
@@ -61,6 +62,15 @@ FILES = {
     "voices/en_US-lessac-medium.onnx.json": "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0",
 }
 VOICE_FILES = ("voices/en_US-lessac-medium.onnx", "voices/en_US-lessac-medium.onnx.json")
+
+
+def report_crashes():
+    """A native library that crashes (an "access violation", exit code -1073741819) takes Python down without a
+    word; this makes it print the Python line it was in, to stderr (the server's log, or the terminal)."""
+    try:
+        faulthandler.enable()
+    except (RuntimeError, ValueError, OSError):  # no stderr to write to (pythonw without a log)
+        pass
 
 
 def sha256(path):
@@ -132,6 +142,7 @@ def main():
                                              "papervoice-read also do this by themselves on first start).")
     ap.add_argument("--check", action="store_true", help="only report which files are present and intact")
     a = ap.parse_args()
+    report_crashes()
     print(f"models folder: {MODELS_DIR}")
     st = status()
     for rel, s in st.items():
@@ -143,7 +154,7 @@ def main():
             (MODELS_DIR / rel).unlink()
     ensure(verbose=True)
     from pdf_reader.read_aloud import aligned_voice
-    print("voice with timing output:", aligned_voice("en_US-lessac-medium") or "could not be made (onnx missing)")
+    print("voice with exact word timing:", aligned_voice("en_US-lessac-medium") or "not available (estimated timing is used)")
     print("all models are in place")
 
 
