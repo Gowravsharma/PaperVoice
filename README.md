@@ -106,8 +106,10 @@ advance instead: `uv run papervoice-models`.
 
 When a new version is out, the extension's popup says so ("Version 1.0.1 is available…"). To update, **double-click
 `update.bat`** in the PaperVoice folder (or run the one-line install command again), then click the reload icon on
-the PaperVoice card of the extensions page. It stops the reading engine, fetches the new code (`git pull` if the
-folder came from git, otherwise the repository's zip laid over it), installs exactly the new locked versions of the
+the PaperVoice card of the extensions page. It first looks whether there is anything new and, if not, says so in a
+second and changes nothing (`update.bat -Force` reinstalls anyway). Otherwise it stops the reading engine, fetches the new code (`git pull` if the
+folder came from git, otherwise the repository's zip laid over it - a folder that was only cloned or unzipped and
+never installed is simply installed), installs exactly the new locked versions of the
 parts, checks the models, and keeps your downloaded models and prepared papers. Nothing else needs doing.
 
 The popup's notice makes one small request to GitHub (`version.json`, a few bytes, at most every 12 hours; GitHub
