@@ -4,14 +4,17 @@
 #   Or, in a downloaded copy:  powershell -ExecutionPolicy Bypass -File install.ps1
 # ---------
 # What it does (each step is skipped when already done, so running it again updates the install):
-#   1. uv (Python manager, installs Python by itself), if missing - from its official installer
-#   2. the PaperVoice code: this folder if the script is run from a copy, else a download to %USERPROFILE%\PaperVoice
-#   3. Node.js 18+ if missing (a private, checksum-verified copy in tools/node; no admin), then its Python and
-#      JavaScript parts (exactly the tested versions: uv.lock, package-lock.json)
+#   1. the PaperVoice code: this folder if the script is run from a copy, else a download to %USERPROFILE%\PaperVoice
+#   2. its own tools, INSIDE that folder (tools\): uv (the tested version), the Python it runs on, and Node.js 18+ if
+#      the computer has none - so nothing the user has (Python, uv, Node, pip/npm packages, PATH, environment
+#      variables) is installed over, changed or even looked at by the packages; no admin rights
+#   3. the Python and JavaScript parts into .venv and node_modules (exactly the tested versions: uv.lock,
+#      package-lock.json)
 #   4. the models (~750 MB, checked against their SHA-256), so the first reading does not wait for them
-#   5. the small helper that lets the browser extension start the reader (current user only, no admin)
+#   5. the small helper that lets the browser extension start the reader (current user only; its own registry keys
+#      and %LOCALAPPDATA%\PaperVoice)
 # Then it opens the browser's extensions page for the one step a script cannot do: loading the extension.
-# Undo: uv run papervoice-setup --remove, then delete the folder.
+# Undo: uninstall.bat, then delete the folder. Nothing else was touched, so nothing else needs undoing.
 
 # -Update: refresh the code of this copy first (git pull, or the repository's zip laid over it; models\ and the
 # user's data are kept), then do the same steps - but only if there is something new (-Force: anyway). update.bat
@@ -25,6 +28,11 @@ $ProgressPreference = "SilentlyContinue"
 # older Windows 10 offers only TLS 1.0/1.1 by default; nodejs.org, GitHub and astral.sh need 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $Repo = "Gowravsharma/PaperVoice"                    # the GitHub repository (owner/name) to download from
+$UvVersion = "0.13.1"                                # the uv the lock file and the tests were made with
+# The user's own settings must not reach into the install (a Python venv, uv or pip variables they use elsewhere)
+foreach ($v in "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_PYTHON", "UV_PROJECT_ENVIRONMENT", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "PIP_INDEX_URL") {
+  Remove-Item "Env:$v" -ErrorAction SilentlyContinue # (this process only; the user's variables stay as they are)
+}
 $Target = Join-Path $env:USERPROFILE "PaperVoice"  # where a download goes
 
 function Step($text) { Write-Host ""; Write-Host "== $text" -ForegroundColor Cyan }
@@ -32,12 +40,6 @@ function Fail($text) { Write-Host ""; Write-Host "PaperVoice was not installed: 
 function Run($exe, [string[]]$arguments) {
   & $exe @arguments
   if ($LASTEXITCODE -ne 0) { Fail "'$exe $($arguments -join ' ')' failed (exit code $LASTEXITCODE)" }
-}
-function Refresh-Path {
-  # programs installed a moment ago are on the PATH of new windows only: read it again for this one
-  $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
-  $user = [Environment]::GetEnvironmentVariable("Path", "User")
-  $env:Path = "$machine;$user;$(Join-Path $env:USERPROFILE '.local\bin')"
 }
 function Has($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 function Download($url, $out) {
@@ -101,19 +103,7 @@ function Overlay-Zip($app) {
 
 if ($env:OS -ne "Windows_NT") { Fail "this installer is for Windows. On macOS/Linux follow the README's manual steps." }
 
-# 1. tools ---------------------------------------------------------------------------------------------------------
-Step "Checking uv"
-if (-not (Has "uv")) {
-  Write-Host "Installing uv (https://docs.astral.sh/uv/)..."
-  Invoke-RestMethod https://astral.sh/uv/install.ps1 -TimeoutSec 60 | Invoke-Expression
-  Refresh-Path
-  if (-not (Has "uv")) { Fail "uv was installed but is not found. Open a new PowerShell window and run this again." }
-}
-Write-Host "uv: $(uv --version)"
-
-Write-Host "(Node.js is checked after the download, below)"
-
-# 2. the code ------------------------------------------------------------------------------------------------------
+# 1. the code ------------------------------------------------------------------------------------------------------
 Step "Getting PaperVoice"
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { "" }
 if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
@@ -161,8 +151,41 @@ if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
 }
 Set-Location $App
 
-# Node.js: the one installed (18 or newer), else a private copy in tools\node - no winget, no admin, nothing else
-# on the computer is touched (the reader finds it there: script.py node_exe)
+# 2. tools, all inside the folder ------------------------------------------------------------------------------------
+# uv would otherwise use shared places: its cache and its downloaded Pythons under the user's profile. These
+# variables are for this script only. (uv's own installer is not used: even with a target folder it writes its
+# "install receipt" into %LOCALAPPDATA%\uv, overwriting the one of a uv the user installed themselves - found by
+# comparing the profile before and after an install. The release zip below writes nothing outside the folder.)
+$tools = Join-Path $App "tools"
+$env:UV_CACHE_DIR = Join-Path $tools "uv-cache"          # removed again at the end (the venv does not need it)
+$env:UV_PYTHON_INSTALL_DIR = Join-Path $tools "python"   # PaperVoice's own Python, not the user's
+$env:UV_PYTHON_PREFERENCE = "only-managed"               # ... and never one of the user's Pythons
+
+Step "Getting uv $UvVersion (private)"
+$uv = Join-Path $tools "uv\uv.exe"
+$haveUv = (Test-Path $uv) -and ((& $uv --version) -match [regex]::Escape($UvVersion))
+if (-not $haveUv) {
+  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "aarch64" } else { "x86_64" }
+  $asset = "uv-$arch-pc-windows-msvc.zip"
+  $base = "https://github.com/astral-sh/uv/releases/download/$UvVersion"
+  $zip = Join-Path $env:TEMP $asset
+  Download "$base/$asset" $zip
+  $want = ((Invoke-WebRequest "$base/$asset.sha256" -UseBasicParsing -TimeoutSec 60).Content -split "\s+")[0].ToLower()
+  $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+  if (-not $want -or $got -ne $want) { Remove-Item $zip -Force; Fail "the uv download did not match its published checksum: run this again." }
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $tmp = Join-Path $env:TEMP "papervoice-uv"
+  if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp)
+  New-Item -ItemType Directory -Force (Join-Path $tools "uv") | Out-Null
+  Copy-Item (Join-Path $tmp "*.exe") (Join-Path $tools "uv") -Force
+  Remove-Item $tmp, $zip -Recurse -Force
+  if (-not (Test-Path $uv)) { Fail "uv could not be unpacked. Run this again." }
+}
+Write-Host "uv: $(& $uv --version)  ($uv)"
+
+# Node.js: the one installed (18 or newer) is only run, never changed; without one, a private copy in tools\node -
+# no winget, no admin (the reader finds it there: script.py node_exe)
 Step "Checking Node.js"
 $nodeOk = $false
 if (Has "node") { $nodeOk = [int]((node --version).TrimStart("v").Split(".")[0]) -ge 18 }
@@ -203,19 +226,27 @@ Write-Host "Node.js: $(node --version)"
 $asUpdate = $Update -and (Test-Path (Join-Path $App ".venv\Scripts\python.exe"))
 Stop-Engine
 Step "Installing the Python parts (uv sync)"
-Run "uv" @("sync", "--locked")
+Run $uv @("sync", "--locked")
+# before the 750 MB of models: can this computer load the native libraries at all? (a report, not a raw crash)
+Step "Checking that this computer can run the models"
+Run $uv @("run", "--no-sync", "papervoice-doctor")
 Step "Installing the maths speech engine and the PDF viewer (npm ci)"
 # npm.cmd, not npm: "npm" can resolve to npm.ps1, which PowerShell's default policy does not let run
-Run "npm.cmd" @("ci", "--prefix", "speech", "--no-audit", "--no-fund")
-Run "npm.cmd" @("ci", "--prefix", "viewer", "--no-audit", "--no-fund")
+# (npm's cache is private too, so the user's is not filled with ours)
+$npmCache = Join-Path $tools "npm-cache"
+Run "npm.cmd" @("ci", "--prefix", "speech", "--no-audit", "--no-fund", "--cache", $npmCache)
+Run "npm.cmd" @("ci", "--prefix", "viewer", "--no-audit", "--no-fund", "--cache", $npmCache)
 
 # 4. models --------------------------------------------------------------------------------------------------------
 Step "Downloading the models (once, ~750 MB; each file checked)"
-Run "uv" @("run", "--no-sync", "papervoice-models")
+Run $uv @("run", "--no-sync", "papervoice-models")
 
 # 5. the browser helper --------------------------------------------------------------------------------------------
 Step "Letting the browser extension start the reader"
-Run "uv" @("run", "--no-sync", "papervoice-setup")
+Run $uv @("run", "--no-sync", "papervoice-setup")
+
+# the caches were only for installing: the venv and node_modules have their own copies of the files
+foreach ($c in $env:UV_CACHE_DIR, $npmCache) { try { Remove-Item $c -Recurse -Force -ErrorAction Stop } catch { } }
 
 # the extension -------------------------------------------------------------------------------------------------------
 $ext = Join-Path $App "extension"

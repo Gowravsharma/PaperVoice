@@ -28,6 +28,7 @@ papervoice-read = "pdf_reader.read_aloud:main"
 papervoice-server = "pdf_reader.server:main"
 papervoice-models = "pdf_reader.models:main"
 papervoice-setup = "pdf_reader.native_host:setup"
+papervoice-doctor = "pdf_reader.doctor:main"
 
 [dependency-groups]
 # only for re-exporting the table model to ONNX (bench/export_tableformer.py, bench/vendor_tableformer.py)

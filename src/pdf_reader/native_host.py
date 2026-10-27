@@ -82,7 +82,10 @@ def start_server():
     if os.name == "nt":
         flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
                  | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000))
-    kwargs = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
+    # the user's own Python settings must not reach the engine (a PYTHONPATH they use for other projects would make
+    # it import their packages instead of its own); only the engine's environment, nothing of theirs is changed
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONSTARTUP")}
+    kwargs = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True, env=env)
     try:
         subprocess.Popen(cmd, creationflags=flags, **kwargs)
     except OSError:  # the browser's job object may not allow breaking away
@@ -133,7 +136,8 @@ def install():
     HOME.mkdir(parents=True, exist_ok=True)
     launcher = HOME / "native-host.bat"
     # the browser runs this file; it must print nothing but the helper's messages
-    launcher.write_text(f'@echo off\r\n"{sys.executable}" -m pdf_reader.native_host %*\r\n', encoding="utf-8")
+    launcher.write_text(f'@echo off\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"{sys.executable}" -m pdf_reader.native_host %*\r\n',
+                        encoding="utf-8")
     manifest = HOME / f"{HOST_NAME}.json"
     manifest.write_text(json.dumps({
         "name": HOST_NAME, "description": "Starts the PaperVoice reading engine (papervoice-server)",
