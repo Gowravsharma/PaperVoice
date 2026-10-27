@@ -1150,6 +1150,39 @@ look. A copy that was only cloned or unzipped (no `.venv`) is installed, not upd
 extension" instead of "reload". Checked on a git clone: never-installed → installed (53 s); nothing new → 1 s, a
 running engine still running; a pushed release → fast-forward, engine stopped, 1.0.1, "reload"; `-Force` → full run.
 Zip copy: same / older / newer / unreadable `version.json` → the four right decisions.
+
+**The installer touches nothing the user already has.** Requirement from the user: PaperVoice must not disturb the
+user's packages and versions. An audit of what the installer put where found leaks: uv's installer (when uv was
+missing) installed into `~\.local\bin` and edited the user's PATH; uv's downloaded Pythons and package cache and npm's
+cache are shared folders; the user's own uv/Python/pip variables could reach the install. Now everything is inside the
+PaperVoice folder: `tools\uv` (the tested version, 0.13.1, from the release zip with its published SHA-256),
+`tools\python` (`UV_PYTHON_PREFERENCE=only-managed`, never one of the user's Pythons), `tools\node` (only when no Node
+18+ is installed - an installed one is only run), `.venv`, `node_modules`; `UV_CACHE_DIR` and npm's `--cache` point into
+`tools\` and are deleted after the install; the user's VIRTUAL_ENV, PYTHONPATH, UV_*, PIP_* are ignored for the install
+and cleared for the engine (`native_host.start_server`, the helper launcher). Outside the folder only the browser
+helper remains (`HKCU` keys of `com.papervoice.reader` for Chrome/Edge/Brave and `%LOCALAPPDATA%\PaperVoice`);
+`uninstall.bat` removes them, so deleting the folder afterwards leaves nothing.
+Verified by snapshotting the profile before and after a full clean install (with a bogus PYTHONPATH set): the user's
+PATH, environment variables, `~\.local`, uv's Python folder and cache, npm's cache and global packages, their Python,
+Node.js and the other browser-helper keys - all unchanged; the installed program passes `bench/test_server.py`
+(ALL PASS) on the private uv and Python. **The first run found a side effect I had not expected:** uv's installer
+writes `uv-receipt.json` into `%LOCALAPPDATA%\uv` even with `UV_INSTALL_DIR` set, overwriting the receipt of a uv the
+user installed themselves (so `uv self update` would look in the wrong place); that is why uv is now unpacked from
+the release zip instead of installed. (My own earlier tests had overwritten the developer's receipt; repaired from
+the known install location.) Another bug found by the same loop: `*.sha256` files arrive from Windows PowerShell 5.1
+as `byte[]`, so a hash compared against them never matched - `Get-Text` decodes them.
+
+**The crash on the second computer was `import onnxruntime`, not the voice-timing step.** With `faulthandler` on
+(added earlier), the user's traceback showed the access violation at `onnxruntime\capi\_pybind_state.py` line 32,
+reached through `models.py main → read_aloud → piper → onnxruntime`: the native library cannot be loaded on that
+computer, and onnxruntime runs every model, so nothing can run there. The cause is not known yet; a documented cause
+of this class is an old or conflicting `msvcp140.dll` (PyQt6 + onnxruntime report, Mendix report) - but on the
+development machine System32 holds 14.38 and onnxruntime loads fine, so it is a lead, not a verdict.
+`papervoice-doctor` (`doctor.py`) imports each native library in its own process and prints the processor with its AVX
+instructions, the System32 C++ runtime versions, and which library crashed, with Microsoft's current runtime as the
+first thing to try; the installer runs it right after `uv sync`, before the 750 MB of models. Checked: all 13 libraries
+load here (10 s); with a fake onnxruntime that does an access violation on import it reports CRASHED for onnxruntime
+and piper and exits 1. The earlier child-process isolation of the voice-timing build stays (harmless, useful).
 ---
 
 ## Before / after

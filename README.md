@@ -116,7 +116,16 @@ The popup's notice makes one small request to GitHub (`version.json`, a few byte
 sees your address like for any web page) - the only time the extension uses the internet. Nothing about you or your
 papers is sent. Switch it off with the **update check** link at the bottom of the popup.
 
-**Uninstall:** `uv run papervoice-setup --remove` in the folder, then delete the folder (and remove the extension).
+**Uninstall:** double-click `uninstall.bat` (it removes the small browser helper and says when it is done), then delete
+the folder and remove the extension. PaperVoice keeps everything inside its folder - its own `uv`, Python and Node.js
+in `tools\`, the packages in `.venv` - and does not change your Python, `uv`, Node.js, packages, `PATH` or environment
+variables; the only things outside the folder are the browser helper's registry keys (current user) and
+`%LOCALAPPDATA%\PaperVoice`, which `uninstall.bat` removes.
+
+**If the install stops with a library "CRASHED":** that computer cannot load one of the libraries the models need. The
+install prints a report (`papervoice-doctor`: processor, Microsoft C++ runtime files, which library) - send it in an
+issue; installing Microsoft's current Visual C++ runtime (<https://aka.ms/vs/17/release/vc_redist.x64.exe>) is the
+first thing to try.
 
 **About the voice:** the default voice, Piper's "lessac", is trained on recordings licensed for **research use
 only** (Blizzard 2013 Lessac data), so it is downloaded from Piper's own repository and is not for commercial use.

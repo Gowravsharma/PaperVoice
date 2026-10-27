@@ -58,6 +58,13 @@ function Download($url, $out) {
   }
   Write-Host ("  done in {0} s" -f [int]((Get-Date) - $t).TotalSeconds)
 }
+function Get-Text($url) {
+  # a small web file as text: Windows PowerShell 5.1 returns some of them (e.g. *.sha256) as raw bytes, which
+  # compared with a hash silently never match
+  $content = (Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 60).Content
+  if ($content -is [byte[]]) { return [System.Text.Encoding]::UTF8.GetString($content) }
+  return [string]$content
+}
 function Get-Version($app) {
   try { return (Get-Content (Join-Path $app "version.json") -Raw | ConvertFrom-Json).version } catch { return "unknown" }
 }
@@ -170,7 +177,7 @@ if (-not $haveUv) {
   $base = "https://github.com/astral-sh/uv/releases/download/$UvVersion"
   $zip = Join-Path $env:TEMP $asset
   Download "$base/$asset" $zip
-  $want = ((Invoke-WebRequest "$base/$asset.sha256" -UseBasicParsing -TimeoutSec 60).Content -split "\s+")[0].ToLower()
+  $want = ((Get-Text "$base/$asset.sha256") -split "\s+")[0].ToLower()
   $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
   if (-not $want -or $got -ne $want) { Remove-Item $zip -Force; Fail "the uv download did not match its published checksum: run this again." }
   Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -203,7 +210,7 @@ if (-not $nodeOk) {
   $name = "node-$($release.version)-win-$arch"
   $zip = Join-Path $env:TEMP "$name.zip"
   Download "https://nodejs.org/dist/$($release.version)/$name.zip" $zip
-  $sums = (Invoke-WebRequest "https://nodejs.org/dist/$($release.version)/SHASUMS256.txt" -UseBasicParsing -TimeoutSec 60).Content
+  $sums = Get-Text "https://nodejs.org/dist/$($release.version)/SHASUMS256.txt"
   $want = ($sums -split "`n" | Where-Object { $_ -match "  $name\.zip\s*$" } | Select-Object -First 1).Split(" ")[0]
   $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
   if (-not $want -or $got -ne $want) { Remove-Item $zip -Force; Fail "the Node.js download did not match its checksum: run this again." }
