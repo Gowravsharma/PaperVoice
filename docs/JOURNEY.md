@@ -1131,6 +1131,25 @@ could not update (it installs the copy it sits in). Now:
   failed with a missing `dotenv` module - a leftover of the test itself (PowerShell 5.1 cannot delete this deep a
   folder: its cleanup removed half of an earlier half-installed environment); redone from a really clean folder it
   passes. The test hook `PAPERVOICE_ZIP_URL` (a mirror, or a local zip) exists for this.
+
+**A 10-minute "downloading Node.js" on the slow test computer.** Windows PowerShell 5.1 draws a progress bar for
+`Invoke-WebRequest` and is far slower for it: measured on the development machine, the same 36 MB file took **41 s
+with the bar, 1 s without**, 2 s with curl.exe - on a slow CPU the gap is much larger. The installer also had no time
+limit, so a stalled connection looked the same. Now: `$ProgressPreference = "SilentlyContinue"` for the whole script;
+large downloads go through `Download` (curl.exe, built into Windows 10+: its own progress bar, 3 retries, gives up
+on under 1 KB/s for 60 s; else `Invoke-WebRequest` with a limit) with a plain error message on failure; time limits on
+the other web requests; TLS 1.2 switched on for older Windows 10. Checked: Node step 1 s in a clean install, and a bad
+address fails with "the download of ... failed (curl exit code 22). Check the internet connection and run this again."
+
+**`update.bat` when there is nothing new, and on a copy never installed.** It used to reinstall everything every time
+(stopping the engine, `npm ci`, a checksum of all 750 MB of models: minutes) and end with "updated". Now it looks
+first (`Newer-Available`): a git copy compares commits after `git fetch` (so a fix pushed without a version bump
+counts), a zip copy compares `version.json` with GitHub's; same or older → "already the newest version. Nothing to
+update." in about a second, engine untouched; cannot tell (offline) → updates anyway; `update.bat -Force` skips the
+look. A copy that was only cloned or unzipped (no `.venv`) is installed, not updated, and its last step says "add the
+extension" instead of "reload". Checked on a git clone: never-installed → installed (53 s); nothing new → 1 s, a
+running engine still running; a pushed release → fast-forward, engine stopped, 1.0.1, "reload"; `-Force` → full run.
+Zip copy: same / older / newer / unreadable `version.json` → the four right decisions.
 ---
 
 ## Before / after
