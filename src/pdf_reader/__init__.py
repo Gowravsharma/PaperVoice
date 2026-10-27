@@ -1,3 +1,7 @@
+from pdf_reader import vc_runtime
+
+vc_runtime.preload()  # first of all: a private C++ runtime for computers whose System32 one is too old (vc_runtime.py)
+
 import argparse
 import time
 from pathlib import Path

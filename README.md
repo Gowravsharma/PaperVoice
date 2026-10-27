@@ -122,10 +122,15 @@ in `tools\`, the packages in `.venv` - and does not change your Python, `uv`, No
 variables; the only things outside the folder are the browser helper's registry keys (current user) and
 `%LOCALAPPDATA%\PaperVoice`, which `uninstall.bat` removes.
 
-**If the install stops with a library "CRASHED":** that computer cannot load one of the libraries the models need. The
-install prints a report (`papervoice-doctor`: processor, Microsoft C++ runtime files, which library) - send it in an
-issue; installing Microsoft's current Visual C++ runtime (<https://aka.ms/vs/17/release/vc_redist.x64.exe>) is the
-first thing to try.
+**Older Windows 10 computers:** some still have a Microsoft C++ runtime from 2019-2020 (`msvcp140.dll` 14.26), too old
+for the machine-learning library, which then crashes while loading. The install checks this right after installing
+the Python parts (`papervoice-doctor`). If it finds that crash it puts a newer copy of the runtime into
+`PaperVoice\tools\runtime` (taken from a package already installed) and PaperVoice loads that one first - nothing on
+your computer is changed, and no administrator rights are needed.
+
+**If the install still stops with a library "CRASHED":** the report it prints (processor, C++ runtime files, which
+library) shows what is wrong - send it in an issue. Installing Microsoft's current Visual C++ runtime
+(<https://aka.ms/vs/17/release/vc_redist.x64.exe>, needs administrator permission) is the next thing to try.
 
 **About the voice:** the default voice, Piper's "lessac", is trained on recordings licensed for **research use
 only** (Blizzard 2013 Lessac data), so it is downloaded from Piper's own repository and is not for commercial use.

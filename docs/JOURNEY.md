@@ -1183,6 +1183,26 @@ instructions, the System32 C++ runtime versions, and which library crashed, with
 first thing to try; the installer runs it right after `uv sync`, before the 750 MB of models. Checked: all 13 libraries
 load here (10 s); with a fake onnxruntime that does an access violation on import it reports CRASHED for onnxruntime
 and piper and exits 1. The earlier child-process isolation of the voice-timing build stays (harmless, useful).
+
+**Second computer, second report: the old C++ runtime, and a private fix.** `papervoice-doctor` on the Core i3-7020U
+(Windows 10, AVX and AVX2 present) showed every native library loading except `onnxruntime` (and `piper`, which imports
+it), and `msvcp140.dll` 14.26.28720 in System32 - from 2020; the development machine has 14.38 and works. numpy,
+opencv and the others carry their own copies of the runtime (renamed by delvewheel) and do not care; onnxruntime asks
+System32 for `msvcp140.dll`, `msvcp140_1.dll`, `vcruntime140.dll` and `vcruntime140_1.dll` (read from its binaries).
+Microsoft's fix (install the current redistributable) needs administrator rights and changes a shared component, so
+the fix is private instead: Windows hands every library that asks for "msvcp140.dll" the module already loaded under
+that name, so a newer copy has to be loaded first in the process (`vc_runtime.preload()`, called from
+`pdf_reader/__init__.py`). Measured: in the engine's real import order **kaldifst loads System32's msvcp140.dll
+before onnxruntime does**, so a copy placed only next to onnxruntime would lose; preloaded, the private copy is the
+only msvcp140.dll in the process. When the doctor sees an access violation and System32 is below 14.40 it copies the
+newer msvcp140.dll that numpy ships (verified 14.40+) to `tools\runtime\msvcp140.dll`, runs the checks again, and
+finally imports all libraries together in the engine's order; if it did not help, the file is removed again. On a
+healthy computer nothing is created and `preload()` does nothing. Checked: healthy computer unchanged (no file, all
+ok); a stand-in onnxruntime that does a real access violation unless the private file exists → doctor detects it,
+places the file, all libraries ok, "Fixed", exit 0; the engine passes `bench/test_server.py` (ALL PASS) with the
+private runtime loaded. **Not proven:** that this repairs the real onnxruntime on that computer - that needs its
+result. Fallback if not: Microsoft's current redistributable (link in the doctor's output).
+
 ---
 
 ## Before / after
