@@ -1,6 +1,6 @@
 [project]
 name = "papervoice"
-version = "1.0.0"
+version = "2.0.0"
 description = "Listen to research papers, maths included: PDF to natural speech on a CPU, with the words highlighted as they are read"
 readme = "README.md"
 license = "GPL-3.0-or-later"
