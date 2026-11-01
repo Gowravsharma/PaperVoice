@@ -27,12 +27,13 @@ import re
 GREEK = set("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda lamda mu nu xi omicron pi rho sigma "
             "tau upsilon phi chi psi omega".split())
 # words that join math tokens inside one run: "phi of t comma x", "R plus times Rd", "a is defined as b"
-MATH_JOIN = set("plus minus times equals is defined as sub superscript of comma open close paren brace bracket in "
+MATH_JOIN = set("plus minus times equals is defined as sub superscript of comma open close paren parenthesis "
+                "parens parentheses brace bracket in "
                 "less greater than or equal to over squared cubed inverse prime hat bar tilde dot transpose not "
                 "wedge vee cap cup circ star intersection union min max sup inf lim log exp sin cos dot "
                 "capital zero one two three four five six seven eight nine ten infinity".split())
-CLOSERS = {"paren", "brace", "bracket"}  # a run may end with "... close paren"
-OPENERS = {"open", "paren", "brace", "bracket", "capital", "negative", "minus"}  # ... and start with "open paren"
+CLOSERS = {"paren", "parenthesis", "parens", "parentheses", "brace", "bracket"}  # a run may end with "... close parenthesis"
+OPENERS = {"open", "paren", "parenthesis", "parens", "parentheses", "brace", "bracket", "capital", "negative", "minus"}  # ... and start with "open parenthesis"
 # words that lead straight into a symbol, with no pause: "let mu", "denote by X", "where f is"
 LEAD_INS = set("let denote denotes denoted define defines defined call called set fix take put consider "
                "write writes written assume suppose given using see".split())

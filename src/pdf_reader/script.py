@@ -27,7 +27,7 @@ from docling_core.types.doc import DocItemLabel, DoclingDocument, TableItem
 from pdf_reader.latex_cleanup import tidy
 from pdf_reader.table_speech import speak_table
 from pdf_reader import text_norm
-from pdf_reader.text_norm import normalize, prose, symbols
+from pdf_reader.text_norm import normalize, parentheticals, prose, symbols
 
 ROOT = Path(__file__).resolve().parents[2]
 TEX2SPEECH = ROOT / "speech" / "tex2speech.mjs"
@@ -123,9 +123,43 @@ def script_parts(doc: DoclingDocument, pdf, speaker, state, stats):
     return [(kind, text) for kind, text, _ in script_items(doc, pdf, speaker, state, stats)]
 
 
+HEADING_NUMBER = re.compile(r"^\s*(\d+(?:\.\d+)+)\.?\s")  # "2.1. Discretization", "3.1 Methodology"
+DOTTED = re.compile(r"\d+(?:\.\d+)+")
+# an equation tag at the end of a formula's PDF text, set off by a space ("= 0, (2.1)"), not a value in it ("g(0.5)")
+TAG_AT_END = re.compile(r"(?:^|\s)\(\s*([1-9]\d*(?:\.\d+)+)\s*\)\s*[.,;]?\s*$")
+TAG_AT_START = re.compile(r"^\s*\(\s*([1-9]\d*(?:\.\d+)+)\s*\)\s+\S")  # some papers put it first: "(2.2) x(t) = ..."
+
+
+def note_numbers(items, state):
+    """Keeps track, while the pages are prepared, of the dotted numbers a paper gives to its parts and of what
+    kind of block carries each: a display formula tagged "(2.1)" is an equation, a heading "2.1 Discretization"
+    a section. A bare "(2.1)" in the running text is then read as what it refers to (text_norm.prose). Each
+    page only adds what it holds (state["refs"] is the paper's live map, state["found"] the part of this page,
+    which the page stores so a cached page adds it again); nothing is searched for in the rest of the paper."""
+    refs, found = state.setdefault("refs", {}), state.setdefault("found", {})
+    for it in items:
+        number = kind = None
+        if it.label == DocItemLabel.FORMULA:
+            text = (it.text or it.orig or "").strip()
+            number, kind = tidy(it.text)[1], "equation"
+            if not number and EQ_NUMBER.fullmatch(text):  # a box holding only the tag
+                number = re.sub(r"[()\s]", "", text)
+            if not number:  # the formula model leaves the tag out; the PDF's own text has it: "... , (2.1)"
+                orig = getattr(it, "orig", "") or ""
+                m = TAG_AT_END.search(orig) or TAG_AT_START.match(orig)
+                number = m.group(1) if m else None
+        elif it.label in (DocItemLabel.SECTION_HEADER, DocItemLabel.TITLE):
+            m = HEADING_NUMBER.match(getattr(it, "text", "") or "")
+            number, kind = (m.group(1) if m else None), "section"
+        if number and DOTTED.fullmatch(number):
+            refs.setdefault(number, set()).add(kind)
+            found.setdefault(number, set()).add(kind)
+
+
 def script_items(doc: DoclingDocument, pdf, speaker, state, stats):
     """Like script_parts, but each part also carries the Docling item it came from (for its page position)."""
     items = [it for it, _ in doc.iterate_items()]
+    note_numbers(items, state)
     # a formula box holding only an equation number, e.g. "(3.25)" next to an equation boxed separately:
     # nothing to say, and not an unreadable formula either
     number_only = {id(it) for it in items if it.label == DocItemLabel.FORMULA and not tidy(it.text)[0].strip()
@@ -164,7 +198,7 @@ def script_items(doc: DoclingDocument, pdf, speaker, state, stats):
             stats["formulas"] += 1
         elif text.strip():
             kind = "caption" if it.label == DocItemLabel.CAPTION else "text"
-            parts.append((kind, symbols(prose(" ".join(text.split()))), it))
+            parts.append((kind, parentheticals(symbols(prose(" ".join(text.split()), state.get("refs")))), it))
             stats["paragraphs"] += 1
         elif it.label in (DocItemLabel.TEXT, DocItemLabel.LIST_ITEM, DocItemLabel.CAPTION):
             # a text block with no words: the PDF has no text layer there (scan, "Print to PDF" outlines)

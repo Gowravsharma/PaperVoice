@@ -44,7 +44,7 @@ from pdf_reader.pdfium_safe import char_count, open_document, page_count, path_c
 from pdf_reader.script import FormulaSpeaker, new_stats
 from pdf_reader.text_norm import normalize
 
-INDEX_VERSION = 11  # bump when the index format or the reading rules change, so old caches are rebuilt
+INDEX_VERSION = 13 # bump when the index format or the reading rules change, so old caches are rebuilt
 # 2: "inside References" is taken from the page before, not from whatever page was indexed last
 # 3: a page indexed on a wrong guess about "inside References" is re-indexed when the page before is done
 
@@ -60,6 +60,7 @@ class Page:
     tail_joined: bool = False
     in_refs_after: bool = False  # still inside the References section at the end of this page
     in_refs_before: bool = False  # what was assumed at the start (a guess if the page before was not ready)
+    numbers: dict = field(default_factory=dict)  # dotted numbers this page defines -> kinds ("equation", "section")
 
     @property
     def tail_sentence(self):
@@ -80,12 +81,14 @@ class Page:
     def to_json(self):
         return {"version": INDEX_VERSION, "number": self.number, "blocks": to_json(self.blocks),
                 "stats": self.stats, "tail": self.tail, "tail_joined": self.tail_joined,
-                "in_refs_after": self.in_refs_after, "in_refs_before": self.in_refs_before}
+                "in_refs_after": self.in_refs_after, "in_refs_before": self.in_refs_before,
+                "numbers": {n: sorted(k) for n, k in self.numbers.items()}}
 
     @classmethod
     def from_json(cls, d):
         return cls(d["number"], from_json(d["blocks"]), 0.0, 0.0, d["stats"], d["tail"], d["tail_joined"],
-                   d.get("in_refs_after", False), d.get("in_refs_before", False))
+                   d.get("in_refs_after", False), d.get("in_refs_before", False),
+                   {n: set(k) for n, k in d.get("numbers", {}).items()})
 
 
 class Engine:
@@ -196,7 +199,8 @@ class PageStreamer:
         self.n_pages = page_count(self.pdf)
         self.order = list(pages) if pages else list(range(1, self.n_pages + 1))
         self.threads, self.prefetch, self.index_all = threads, prefetch, index_all
-        self.state = {"keep_references": keep_references, "in_refs": False}
+        self.refs = {}  # the paper's live map: dotted number -> kinds of block that carry it (script.note_numbers)
+        self.state = {"keep_references": keep_references, "in_refs": False, "refs": self.refs}
         self.cursor = self.order[0]  # page the listener wants now; the worker starts preparing here
         self.pages = {}
         self.cache_dir = Path(cache_dir) if cache_dir else None
@@ -221,6 +225,8 @@ class PageStreamer:
                 d = json.loads(f.read_text(encoding="utf-8"))
                 if d.get("version") == INDEX_VERSION:
                     self.pages[p] = Page.from_json(d)
+                    for number, kinds in self.pages[p].numbers.items():  # a cached page adds what it defines
+                        self.refs.setdefault(number, set()).update(kinds)
 
     def _save(self, *pages):
         if self.cache_dir:
@@ -315,12 +321,14 @@ class PageStreamer:
         ocr = not self.has_text_layer(p)
         stats = new_stats()
         stats["ocr"] = ocr
+        self.state["found"] = {}  # the numbers of this page, filled while it is indexed (script.note_numbers)
         blocks = self.engine.index_page(self.pdf_path, self.pdf, p, ocr, self.state, stats)
-        if prev is not None and prev.tail and not prev.tail_joined and join_tail(prev.tail, blocks):
+        if prev is not None and prev.tail and not prev.tail_joined and join_tail(prev.tail, blocks, self.refs):
             prev.tail_joined = True
         tail = take_tail(blocks) if p < self.n_pages and (p + 1) not in self.pages else None
         page = Page(p, blocks, time.perf_counter() - self.t0, time.perf_counter() - t, stats, tail,
-                    in_refs_after=self.state["in_refs"], in_refs_before=in_refs_before)
+                    in_refs_after=self.state["in_refs"], in_refs_before=in_refs_before,
+                    numbers=self.state["found"])
         with self.cond:
             self.pages[p] = page
             # the next page was indexed earlier (a jump) with a guess about "inside References"; if this page

@@ -15,7 +15,7 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from pdf_reader.script import UNREADABLE, script_items
-from pdf_reader.text_norm import normalize, normalize_numbers, prose, symbols
+from pdf_reader.text_norm import normalize, normalize_numbers, parentheticals, prose, symbols
 
 ABBREV = re.compile(r"(?:\b(?:e\.g|i\.e|et al|cf|vs|resp|w\.r\.t|i\.i\.d|r\.v|a\.s|etc|approx|Fig|Figs|Eq|Eqs|Sec|"
                     r"Secs|No|Thm|Prop|Def|Rem|Lem|Ref|Refs|Ch|Vol|pp|resp)|\b[A-Z])\.$")
@@ -56,8 +56,8 @@ def split_sentences(text):
     return [s for s in out if s]
 
 
-def _speak_text(sentence):
-    return normalize(symbols(prose(sentence)))
+def _speak_text(sentence, refs=None):
+    return normalize(parentheticals(symbols(prose(sentence, refs))))
 
 
 def page_blocks(doc, pdf, speaker, state, stats, page_no):
@@ -73,7 +73,7 @@ def page_blocks(doc, pdf, speaker, state, stats, page_no):
         bbox = boxes[0] if boxes else None
         bid = f"{page_no}.{k}"
         if kind in ("text", "caption"):
-            pairs = [(s, _speak_text(s)) for s in split_sentences(" ".join(item.text.split()))]
+            pairs = [(s, _speak_text(s, state.get("refs"))) for s in split_sentences(" ".join(item.text.split()))]
         elif kind == "heading":
             pairs = [(" ".join(item.text.split()), normalize(part))]
         elif kind == "formula":
@@ -99,7 +99,7 @@ def take_tail(blocks):
     return {"block": block.id, "bbox": block.bbox, "boxes": block_boxes(block), "sentence": asdict(tail)}
 
 
-def join_tail(tail, blocks):
+def join_tail(tail, blocks, refs=None):
     """Join the previous page's unfinished sentence to the first body paragraph of this page (figure captions
     and tables at the top of a page are floats and are read after the finished sentence). True if joined."""
     lead = 0
@@ -115,7 +115,7 @@ def join_tail(tail, blocks):
         joined = last[:-1] + first.text
     else:
         joined = last + " " + first.text
-    target.sentences[0] = Sentence(first.id, joined, _speak_text(joined))
+    target.sentences[0] = Sentence(first.id, joined, _speak_text(joined, refs))
     target.continues_from = tail["block"]
     if lead:
         blocks.insert(0, blocks.pop(lead))

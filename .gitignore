@@ -38,6 +38,8 @@ test.py
 output.md
 fast-speec_2.md
 context/
+context.md
+kprof_*.json
 # ground truth derived from third-party papers (benchmarks only)
 refs/
 # local benchmark environments

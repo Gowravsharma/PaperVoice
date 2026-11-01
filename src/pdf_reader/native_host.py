@@ -85,6 +85,7 @@ def start_server():
     # the user's own Python settings must not reach the engine (a PYTHONPATH they use for other projects would make
     # it import their packages instead of its own); only the engine's environment, nothing of theirs is changed
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONSTARTUP")}
+    env["PYTHONUNBUFFERED"] = "1"
     kwargs = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True, env=env)
     try:
         subprocess.Popen(cmd, creationflags=flags, **kwargs)

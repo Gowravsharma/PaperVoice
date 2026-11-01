@@ -77,7 +77,24 @@ def _spaced(t, i, word):
 ARXIV = re.compile(r"arXiv:\s*\S+")
 
 
-def prose(t):
+def _number_reference(num, refs):
+    """What a bare "(2.1)" in the running text refers to. refs is the paper's live map, number -> kinds of block
+    that carry it ("equation" for a tagged display formula, "section" for a numbered heading), see
+    script.note_numbers; None = no map (old behaviour: equation).
+      starts with "0."      a value, never an equation or a section (weights, probabilities, standard errors)
+      only equation / only section   said as such
+      both, or not seen yet           the number alone: never wrong, and it does not name the wrong thing"""
+    if num.startswith("0."):
+        return num
+    kinds = {"equation"} if refs is None else refs.get(num, set())
+    if kinds == {"equation"}:
+        return f"equation {num}"
+    if kinds == {"section"}:
+        return f"section {num}"
+    return num
+
+
+def prose(t, refs=None):
     t = EMAIL.sub("an e-mail address", t)
     t = URL.sub("a link", t)
     t = ARXIV.sub("an arXiv identifier", t)  # "math.PR/0905.1863" is an identifier, not a number
@@ -89,15 +106,18 @@ def prose(t):
     t = CITE_AUTHOR.sub("", t)
     t = CITE_YEAR.sub("", t)
     t = re.sub(r"\s+\b(and|or)\s*(?=[,.;])", "", t)  # "in [12] and (Ren et al., 2019)," left "… and,"
-    t = EQ_REF.sub(r"equation \1", t)
+    t = EQ_REF.sub(lambda m: _number_reference(m.group(1), refs), t)
     for short, long in ABBREVIATIONS.items():
         t = re.sub(r"(?<![\w.])" + re.escape(short) + r"(?=[\s,;:.)]|$)", long, t)  # "et al.." too
-    t = t.replace("[", "(").replace("]", ")")
     return re.sub(r"\s+([,.;:])", r"\1", t)
 
 
 MATHY_ITEM = re.compile(r"[\wͰ-Ͽ′'+\-·.]{1,4}")
-BRACKET_WORDS = {"(": "open paren", ")": "close paren", "{": "open brace", "}": "close brace"}
+BRACKET_WORDS = {
+    "(": "open parenthesis", ")": "close parenthesis",
+    "[": "open bracket", "]": "close bracket",
+    "{": "open brace", "}": "close brace"
+}
 
 
 # the letter a as a variable: the voice reads "a" as the article "uh" and "ay" as "eye"; "eigh" is the letter name
@@ -123,7 +143,8 @@ def inline_math(t):
     """Math written inline in a sentence arrives as flattened text, and the voice silently skips its brackets
     and commas ("M(d, d)" was heard as "M d d"). Give them a spoken form, in the same style as display formulas:
       f(x, y)      -> "f of x comma y"            (a short name right before a bracketed list)
-      (0, T), {..} -> "open paren 0 comma T close paren"
+      (0, T), {..} -> "open parenthesis 0 comma T close parenthesis"
+      [0, T]       -> "open bracket 0 comma T close bracket"
       a := ..., x = a + 1 -> "eigh" for the variable a (the voice reads a lone "a" as the article "uh")
       ti = ih      -> "t i = i h" (two letters that are not a word, next to an operator: flattened math)
     Only short-item lists count, so ordinary parentheses in prose ("see Section 2", "i.e., ...") are untouched."""
@@ -138,7 +159,7 @@ def inline_math(t):
             return m.group(0)
         items = " comma ".join(_item(x) for x in m.group(2).split(","))
         return f" {BRACKET_WORDS[m.group(1)]} {items} {BRACKET_WORDS[m.group(3)]}"  # "max{a, 0}": a space
-    t = re.sub(r"([({])([^(){}]{1,40})([)}])", group, t)
+    t = re.sub(r"([(\[{])([^()\[\]{}]{1,40})([)\]}])", group, t)
     ops = r"(?::=|=|≤|≥|<|>|\+|−|∈|×|·|∧|∨|∩|∪)"
     t = re.sub(r"(?<![\w'’])a(?=\s*" + ops + ")", LETTER_A, t)
     t = re.sub(r"(" + ops + r")(\s*)a(?![\w'’])", r"\1\2" + LETTER_A, t)
@@ -173,6 +194,7 @@ def symbols(t, relations=RELATIONS):
     t = re.sub(r"(?<=\s)\\(?=\s)", "set minus", t)  # "X \ I(f)": the text layer stores ∖ as a backslash
     t = re.sub(r"[\"“”„]", "", t)  # quotation marks are not spoken, and wetext escapes them as \"
     t = re.sub(r"(?<=[(,])\s*·\s*(?=[,)])", "dot", t)  # placeholder: φ(t,·) -> "phi(t,dot)", not "times"
+    t = t.replace("[", " open bracket ").replace("]", " close bracket ")
     out = []
     for i, ch in enumerate(t):
         if ch in DROP:
@@ -185,6 +207,33 @@ def symbols(t, relations=RELATIONS):
     t = re.sub(r"[ \t]+", " ", "".join(out))
     t = re.sub(r"\s+([,.;:])", r"\1", t)  # dropped markers leave "PDES ,."
     return re.sub(r"[,;:]+\.", ".", t).strip()
+
+
+PARENTHESIS = re.compile(r"\s*\(([^(){}]{2,200})\)")  # an innermost pair; nested ones are done from the inside out
+
+
+def parentheticals(t):
+    """A listener cannot see brackets: "a teacher (that is, knowledge distillation) to train" was heard as one run
+    of words (the voice does not pause at "(" or ")"). A phrase in brackets gets a comma before and after it, so
+    it is set off as an aside; only commas are added, never words. Applied after symbols(), which has already
+    turned bracketed math ("(0, T)", "f(x, y)") into words, so what is left in brackets is prose.
+      "(that is, knowledge distillation)" -> ", that is, knowledge distillation,"
+      no comma where punctuation already stands next to it, or at the start or end of the sentence
+      "(a)", "(ii)", "(103)", "(0.5)": markers and numbers, not a phrase - unchanged (nothing with a 2-letter word)"""
+    def aside(m):
+        inner = m.group(1).strip(" ,;")
+        if not re.search(r"[A-Za-z]{2,}", inner) or re.fullmatch(r"[ivxIVX]{1,5}", inner):  # "(ii)": a marker
+            return m.group(0)
+        before, after = m.string[:m.start()].rstrip(), m.string[m.end():].lstrip()
+        lead = "" if not before or before[-1] in ",;:.!?" else ","
+        trail = "" if not after or after[0] in ",;:.!?" or inner[-1] in ".!?:" else ","
+        return (lead + " " if before else "") + inner + trail
+    for _ in range(3):
+        new = PARENTHESIS.sub(aside, t)
+        if new == t:
+            break
+        t = new
+    return t
 
 
 _normalizer = None

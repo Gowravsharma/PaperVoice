@@ -4,8 +4,7 @@ Turn a research paper (PDF) into natural speech **on your own computer**, with e
 Equations, inline symbols and tables are spoken too, not skipped. It runs on an ordinary laptop CPU: no GPU, no
 cloud, nothing leaves your machine.
 
-> **Status: v1.0, looking for feedback.** It is used daily on maths-heavy papers. Please open an issue for
-> anything that sounds wrong (see [Feedback](#feedback)).
+> **Status: v2.0 (Dual Engine)** — Featuring studio-quality 24 kHz neural narration (Kokoro-82M) alongside the classic ultra-lightweight acoustic engine (Piper v1.0).
 
 ## What it does
 
@@ -14,17 +13,23 @@ cloud, nothing leaves your machine.
 - **Speaks maths:** equations are recognised from the page image and read with
   [Speech Rule Engine](https://speechruleengine.org/) (ClearSpeak), with pauses at natural points:
   "the norm of phi sub infinity, is defined as sup over t comma x in Q sub T of …". Inline symbols such as
-  `φ`, `M(d, d)` and `a := σσᵀ` are spoken too.
+  `φ`, `M(d, d)` and `a := σσᵀ` are spoken too, with full formal articulation ("open parenthesis", "open bracket").
 - **Sounds like a person reading:** pauses between sentences, paragraphs and sections, short phrase breaks in
   long sentences (prosodic phrasing), and a slower pace for equations and maths-heavy sentences.
 - **Reads tables** row by row: "Table 2. … FastSpeech: Training Time in hours fifty three point one two, …".
 - **Read-along viewer:** the PDF stays as it is, the spoken sentence and word are highlighted, and a click
-  anywhere starts reading from there. Speed is adjustable while it plays.
+  anywhere starts reading from there. Speed is adjustable while it plays with 0 ms native latency.
 - **Browser extension** (Chrome, Edge): on a tab showing a PDF (arXiv, a journal, a file on your disk), click
   the icon to start listening.
 
-**v1 reads symbols literally:** `σ` is "sigma" and `∧` is "wedge", as written. Reading meaning from context
-(`∧` → "minimum", `a⁺` → "positive part of a") is planned for v2.
+## Voice Engines: v2 (Neural) & v1 (Classic)
+
+PaperVoice provides two distinct voice engines to suit any hardware:
+
+| Engine | Model | Quality & Sample Rate | Memory | Best For | Activation |
+|---|---|---|---|---|---|
+| **v2 (Default)** | Kokoro-82M (StyleTTS 2) | 24 kHz Neural Studio Voice | ~500 MB RAM | Modern CPUs (Intel i5/Ryzen), natural human prosody | Default (or `PAPERVOICE_VOICE_ENGINE=kokoro`) |
+| **v1 (Classic)** | Piper (`en_US-lessac-medium`) | 22 kHz Clean Acoustic Voice | ~250 MB RAM | Low-end / older dual-core laptops, minimal memory | `set PAPERVOICE_VOICE_ENGINE=piper` (or auto-fallback) |
 
 ## How it works
 
@@ -33,7 +38,9 @@ PDF ─► Docling (layout: Heron, ONNX) ─► text blocks in reading order
          ├─ display equations ─► PP-FormulaNet+ S (ONNX) ─► LaTeX ─► Speech Rule Engine ─► words + pauses
          ├─ tables ─► TableFormer (ONNX) ─► rows and columns ─► spoken sentences
          └─ text ─► citations, links, symbols, numbers, dates (wetext) ─► prosodic phrasing
-                                                   ─► Piper voice (ONNX) ─► audio + word timings
+                                                   │
+                                                   ├─► v2: Kokoro-82M Neural Voice (ONNX) ─► 24 kHz audio
+                                                   └─► v1: Piper Acoustic Voice (ONNX)    ─► 22 kHz audio
 ```
 
 Every model runs on [ONNX Runtime](https://onnxruntime.ai/); PyTorch is not needed. A local server
@@ -178,12 +185,12 @@ uv run papervoice-convert paper.pdf --speech             # Markdown + JSON with 
 | `(2.1)` | "equation two point one" | equation references |
 | `https://…`, `name@site.org` | "a link", "an e-mail address" | |
 | `x := y` | "x is defined as y" | |
-| `M(d, d)`, `(0, T]` | "M of d comma d", "open paren zero comma T close paren" | brackets are spoken, not swallowed |
+| `M(d, d)`, `[0, T]` | "M of d comma d", "open bracket zero comma T close bracket" | brackets and parentheses are spoken formally |
 | `tᵢ = ih` (flattened by the PDF) | "t i equals i h" | letters that are not a word are spelled |
 | `2/3` in a table | "two slash three" | in prose it is "two thirds" |
 | `/`, `–` in a table cell | "no value" | |
 
-## Known limitations (v1)
+## Known limitations
 
 - **Inline maths comes from the PDF's text layer,** which flattens it: `tᵢ` and `t·i` both arrive as "ti", and
   nested brackets such as `(E|R|ᵖ)^{1/p}` can come out garbled. Display equations are recognised from the image
@@ -191,7 +198,7 @@ uv run papervoice-convert paper.pdf --speech             # Markdown + JSON with 
 - Piecewise definitions are read as "2 cases, Case 1: …".
 - Scanned PDFs work (OCR), but are slower (~15 s per page), and the highlight is a box around the paragraph
   being read: a scan has no text in the browser to light word by word.
-- English only; one voice (Piper "lessac", medium).
+- English only; two voices: Kokoro-82M (default neural 24 kHz) and Piper (classic acoustic 22 kHz).
 - The first page takes a few seconds; after that, pages are prepared ahead of the reader.
 
 ## Feedback
@@ -231,7 +238,8 @@ It builds on:
 | docling-ibm-models (parts in `src/pdf_reader/vendor/tableformer/`) | table cell matching | MIT |
 | [PP-FormulaNet+ S](https://github.com/PaddlePaddle/PaddleOCR) | formula recognition (exported to ONNX here) | Apache-2.0 |
 | [Speech Rule Engine](https://github.com/Speech-Rule-Engine/speech-rule-engine), [MathJax](https://www.mathjax.org/) | maths to words | Apache-2.0 |
-| [Piper](https://github.com/OHF-Voice/piper1-gpl) + espeak-ng | the voice | GPL-3.0 |
+| [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) / [StyleTTS 2](https://github.com/yl4579/StyleTTS2) | v2 neural voice | Apache-2.0 |
+| [Piper](https://github.com/OHF-Voice/piper1-gpl) + espeak-ng | v1 classic voice | GPL-3.0 |
 | [wetext](https://github.com/pengzhendong/wetext) | numbers, dates, units | Apache-2.0 |
 | [PDF.js](https://mozilla.github.io/pdf.js/) | the viewer | Apache-2.0 |
 | [ONNX Runtime](https://onnxruntime.ai/), [RapidOCR](https://github.com/RapidAI/RapidOCR) | inference, OCR | MIT, Apache-2.0 |

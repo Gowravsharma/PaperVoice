@@ -7,7 +7,7 @@
 //   --literal skips both and gives the engine's own reading.
 import { createRequire } from "module";
 import { makeReadable } from "./readable.mjs";
-import { phrase, speakPhrased } from "./phrasing.mjs";
+import { finish, phrase, speakPhrased } from "./phrasing.mjs";
 const require = createRequire(import.meta.url);
 
 const { mathjax } = require("mathjax-full/js/mathjax.js");
@@ -68,7 +68,7 @@ await sre.engineReady();
 
 function speakFormula(latex) {
   const tree = tex2tree(latex);
-  if (!phrasing) return sre.toSpeech(visitor.visitTree(tree));
+  if (!phrasing) return finish(sre.toSpeech(visitor.visitTree(tree)));
   // read the formula piece by piece at its top level and join the pieces with pauses (phrasing.mjs)
   return speakPhrased(tree, (nodes) => sre.toSpeech(`<math>${nodes.map((n) => visitor.visitTree(n)).join("")}</math>`),
     (whole) => sre.toSpeech(visitor.visitTree(whole)));

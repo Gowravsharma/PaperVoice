@@ -31,7 +31,7 @@ import re
 from pdf_reader.prosody import phrase
 from pdf_reader.text_norm import LETTER_A
 
-PAUSES = {"none": 0.0, "clause": 0.15, "formula": 0.30, "sentence": 0.35, "paragraph": 0.70, "section": 1.00}
+PAUSES = {"none": 0.0, "clause": 0.08, "formula": 0.18, "sentence": 0.12, "paragraph": 0.28, "section": 0.45}
 FORMULA_PACE = 0.8  # display math 20 % slower than the text around it
 
 

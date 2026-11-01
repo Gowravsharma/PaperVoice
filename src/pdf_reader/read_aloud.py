@@ -20,6 +20,7 @@ clause / sentence / paragraph / section), plus PAGE_PAUSE after a page. Voices l
 """
 import argparse
 import io
+import os
 import queue
 import subprocess
 import sys
@@ -27,6 +28,12 @@ import threading
 import time
 import wave
 from pathlib import Path
+
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from piper import PiperVoice, SynthesisConfig
 
@@ -87,6 +94,10 @@ class Narrator:
         self.speed = speed
 
     @property
+    def name(self):
+        return getattr(getattr(self.voice, "config", None), "espeak_voice", "en_US-lessac-medium")
+
+    @property
     def speed(self):
         return self._speed
 
@@ -118,6 +129,20 @@ class Narrator:
             al = [(a.phoneme, int(a.num_samples)) for a in c.phoneme_alignments] if c.phoneme_alignments else None
             out.append((c.phonemes, c.audio_int16_bytes, al))
         return out
+
+
+def make_narrator(voice=None, speed=1.0):
+    """The voice that reads: Kokoro by default (V2 neural voice), or Piper if PAPERVOICE_VOICE_ENGINE=piper
+    or as resilient fallback if Kokoro is unavailable."""
+    engine = os.environ.get("PAPERVOICE_VOICE_ENGINE", "kokoro").strip().lower()
+    if engine != "piper":
+        try:
+            from pdf_reader.kokoro_voice import KokoroNarrator
+            kokoro_voice = voice if (voice and voice != "en_US-lessac-medium") else None
+            return KokoroNarrator(voice=kokoro_voice, speed=speed)
+        except Exception as e:
+            print(f"Notice: Kokoro voice unavailable ({e}); falling back to Piper.", flush=True)
+    return Narrator(voice or "en_US-lessac-medium", speed)
 
 
 def wav_bytes(pcm, rate):
@@ -202,7 +227,11 @@ class ReadAloud:
                 self.log["first_audio"] = now
             if self.log["pages"][page]["first_audio"] is None:
                 self.log["pages"][page]["first_audio"] = now
-                print(f"▶ page {page} of {self.streamer.n_pages}" + (" (playing)" if self.play else ""), flush=True)
+                play_tag = " (playing)" if self.play else ""
+                try:
+                    print(f"▶ page {page} of {self.streamer.n_pages}{play_tag}", flush=True)
+                except UnicodeEncodeError:
+                    print(f"> page {page} of {self.streamer.n_pages}{play_tag}", flush=True)
             self.log["pages"][page]["seconds"] += seconds
             # an underrun is the listener hearing silence because the next sentence was not ready in time;
             # in save-only mode this is computed against a virtual playback clock
@@ -252,7 +281,7 @@ def main():
     ensure()  # first start of a fresh install: downloads the models
     streamer = PageStreamer(a.pdf, prefetch=a.prefetch, pages=pages)
     try:
-        narrator = Narrator(a.voice, a.speed)  # loads while the page worker loads its models
+        narrator = make_narrator(a.voice, a.speed)  # loads while the page worker loads its models
     except ValueError as e:
         ap.error(str(e))
     log = ReadAloud(a.pdf, pages, narrator, streamer, a.play, a.save, announce=not a.no_page_numbers).run()

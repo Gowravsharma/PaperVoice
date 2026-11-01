@@ -310,14 +310,16 @@ class Server:
 
     def _load(self):
         from pdf_reader.models import ensure
-        from pdf_reader.read_aloud import Narrator
+        from pdf_reader.read_aloud import make_narrator
         ensure()  # first start of a fresh install: downloads the models (models.py)
         from pdf_reader.stream import Engine
         t = time.perf_counter()
-        self.narrator = Narrator()
+        self.narrator = make_narrator()
+        voice_desc = getattr(self.narrator, "voice_name", getattr(self.narrator, "name", "Piper"))
+        engine_desc = "Kokoro" if hasattr(self.narrator, "voice_name") else "Piper"
         self.engine = Engine()
         self.ready.set()
-        print(f"models loaded in {time.perf_counter() - t:.1f}s; ready", flush=True)
+        print(f"models loaded in {time.perf_counter() - t:.1f}s; voice engine: {engine_desc} ({voice_desc}); ready", flush=True)
 
     def open(self, data=None, path=None, name=None):
         self.ready.wait()
@@ -504,8 +506,10 @@ class Handler(BaseHTTPRequestHandler):
             if parts[0] == "pdfjs":
                 return self._static(PDFJS, "/".join(parts[1:]))
             if url.path == "/api/health":
+                engine_name = "kokoro" if hasattr(SERVER.narrator, "voice_name") else "piper"
+                voice_name = getattr(SERVER.narrator, "voice_name", getattr(SERVER.narrator, "name", "en_US-lessac-medium"))
                 return self._send(200, {"ready": SERVER.ready.is_set(), "docs": list(SERVER.sessions),
-                                        "code": CODE_VERSION})
+                                         "code": CODE_VERSION, "engine": engine_name, "voice": voice_name})
             if len(parts) >= 4 and parts[:2] == ["api", "doc"]:
                 s = SERVER.sessions.get(parts[2])
                 if s is None:

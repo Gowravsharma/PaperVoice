@@ -317,7 +317,7 @@ const GREEK = { alpha: "α", beta: "β", gamma: "γΓ", delta: "δΔ∆", epsilo
   tau: "τ", upsilon: "υ", phi: "φϕΦ", chi: "χ", psi: "ψΨ", omega: "ωΩ" };
 const SPOKEN_SYMBOL = { ...GREEK, equals: "=", plus: "+", minus: "−-", negative: "−-", times: "×·∗", less: "<≤≪",
   greater: ">≥≫", infinity: "∞", integral: "∫", sum: "∑Σ", product: "∏", partial: "∂", nabla: "∇", prime: "′'",
-  comma: ",", period: ".", colon: ":", paren: "()", bracket: "[]", brace: "{}", bar: "|‖", vertical: "|",
+  comma: ",", period: ".", colon: ":", paren: "()", parenthesis: "()", parentheses: "()", bracket: "[]", brackets: "[]", square: "[]", brace: "{}", bar: "|‖", vertical: "|",
   member: "∈", arrow: "→⟶↦⇒", hat: "ˆ^", dot: "·.", root: "√", tilde: "˜~", zero: "0", one: "1", two: "2",
   three: "3", four: "4", five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10", half: "2",
   squared: "2", cubed: "3", union: "∪", intersection: "∩", subset: "⊂⊆", approximately: "≈", not: "≠",
@@ -602,26 +602,25 @@ const player = {
       state.cur.wi = 0;
       prepareTiming();
     }
-    this.audio.playbackRate = 1; // speed is applied when the voice is synthesised (natural pitch)
+    this.audio.playbackRate = state.speed; // instant pitch-preserved speed scaling in browser
     this.audio.play().catch(() => {});
     for (let k = 1; k <= 3; k++) if (this.queue[this.idx + k]) this.url(this.queue[this.idx + k].id).catch(() => {});
     this.topUp(g);
   },
 
   url(id) {
-    // the sentence's audio and its word timing (for word-by-word highlighting), fetched together
-    const key = `${id}@${state.speed}`;
-    if (!this.urls.has(key)) {
-      const q = `${encodeURIComponent(id)}?speed=${state.speed}`;
-      this.urls.set(key, Promise.all([
+    // the sentence's audio and its word timing (for word-by-word highlighting), fetched once and played at state.speed
+    if (!this.urls.has(id)) {
+      const q = encodeURIComponent(id);
+      this.urls.set(id, Promise.all([
         api(`/api/doc/${state.doc}/audio/${q}`).then((r) => r.blob()).then((b) => URL.createObjectURL(b)),
         api(`/api/doc/${state.doc}/timing/${q}`).then((r) => r.json()),
       ]).then(([url, timing]) => ({ url, timing })).catch((err) => {
-        this.urls.delete(key); // do not keep a failure: the next attempt asks again
+        this.urls.delete(id); // do not keep a failure: the next attempt asks again
         throw err;
       }));
     }
-    return this.urls.get(key);
+    return this.urls.get(id);
   },
 
   async topUp(g) {
@@ -775,8 +774,10 @@ setHighlight(savedMode);
 $("speed").addEventListener("input", (e) => {
   state.speed = +(+e.target.value).toFixed(2);
   $("speedOut").textContent = `${state.speed.toFixed(2)}×`;
-  // the current sentence finishes at the old speed; the next ones are fetched at the new one
-  for (let k = 1; k <= 2; k++) if (player.queue[player.idx + k]) player.url(player.queue[player.idx + k].id).catch(() => {});
+  // immediately adjust playback rate on audio for instantaneous response with zero server load
+  if (player.audio) {
+    player.audio.playbackRate = state.speed;
+  }
 });
 $("file").addEventListener("change", async (e) => {
   const f = e.target.files[0];

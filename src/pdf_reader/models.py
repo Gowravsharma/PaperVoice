@@ -135,6 +135,12 @@ def ensure(verbose=False):
             sys.exit(f"these downloads did not verify (different from the tested files), removed: {bad}")
     elif verbose:
         print("all model files are in place")
+    try:
+        from pdf_reader.kokoro_voice import ensure_files
+        ensure_files("kokoro-v1.0.fused_snake.onnx")
+    except Exception as e:
+        if verbose:
+            print(f"Kokoro model status: {e}", flush=True)
 
 
 def main():
