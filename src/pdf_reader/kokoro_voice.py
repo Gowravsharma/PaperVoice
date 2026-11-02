@@ -3,7 +3,7 @@ kokoro_voice.py - an optional second voice, Kokoro-82M, that can be plugged in i
 
     uv pip install kokoro-onnx                       # once; not part of the normal install
     set PAPERVOICE_VOICE_ENGINE=kokoro               # then start papervoice-server / papervoice-read as usual
-    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.fast.onnx  # default: fast Conv1D model (380 ms faster per sentence)
+    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.fused_snake.onnx  # default: AVX2 fused Snake model (fastest, with portable fast fallback)
     set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.onnx       # optional: unmodified baseline
     set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.int8.onnx  # optional: the smaller (92 MB) quantised model
 
@@ -227,7 +227,7 @@ class KokoroNarrator:
         except ImportError:
             raise SystemExit("The Kokoro voice needs one extra package: uv pip install kokoro-onnx") from None
         dll_path = pathlib.Path("tools/snake_op.dll")
-        default_model = "kokoro-v1.0.onnx"
+        default_model = "kokoro-v1.0.fused_snake.onnx"
         model = os.environ.get("PAPERVOICE_KOKORO_MODEL", default_model)
         model = ensure_files(model)
 
