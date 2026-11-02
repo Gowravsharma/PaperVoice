@@ -18,7 +18,7 @@ if errorlevel 1 (
   echo   Run install.bat again: it skips what is already done and continues.
   echo   If it fails again, send everything printed in this window: click the window,
   echo   press Ctrl+A then Enter to copy it, and paste it into a message.
-  echo   (A line saying a library "CRASHED" is the computer check - it tells what to try.)
+  echo   [A line saying a library "CRASHED" is the computer check - it tells what to try.]
   echo ==============================================================================
 ) else (
   echo.

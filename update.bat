@@ -15,7 +15,7 @@ if errorlevel 1 (
   echo ==============================================================================
   echo   The update did NOT finish. The reason is in the red text above.
   echo   Run update.bat again: it skips what is already done and continues.
-  echo   If it fails again, send everything printed in this window (Ctrl+A, then Enter, copies it).
+  echo   If it fails again, send everything printed in this window [Ctrl+A, then Enter, copies it].
   echo ==============================================================================
 )
 echo.
