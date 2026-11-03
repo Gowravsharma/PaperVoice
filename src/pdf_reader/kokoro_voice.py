@@ -3,10 +3,11 @@ kokoro_voice.py - an optional second voice, Kokoro-82M, that can be plugged in i
 
     uv pip install kokoro-onnx                       # once; not part of the normal install
     set PAPERVOICE_VOICE_ENGINE=kokoro               # then start papervoice-server / papervoice-read as usual
-    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.fast.onnx  # default: fast Conv1D model (380 ms faster per sentence)
-    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.onnx       # optional: unmodified baseline
+    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.extreme.onnx  # default: fast Conv1D + AVX2 Snake + Fused AdaIN
+    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.fast.onnx     # optional: fast Conv1D model (portable, no custom ops)
+    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.onnx          # optional: unmodified baseline
     set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.fused_snake.onnx  # optional: AVX2 fused Snake model (research)
-    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.int8.onnx  # optional: the smaller (92 MB) quantised model
+    set PAPERVOICE_KOKORO_MODEL=kokoro-v1.0.int8.onnx     # optional: the smaller (92 MB) quantised model
 
 Without the variable nothing changes: read_aloud.make_narrator() builds the Piper voice as before.
 
@@ -119,6 +120,24 @@ def _patch_kokoro_stft(src_path, dst_path):
     del m.graph.node[:]
     m.graph.node.extend(new_nodes)
 
+    # Fix DC imaginary branch cut in atan2 decomposition:
+    # Conv1D yields exact 0.0 for DC imag, which evaluated to 0.0 > 0.0 -> False,
+    # causing a -pi phase flip across all speech frames (metallic distortion).
+    # Shifting Constant_20 to -eps (-1.1920929e-07) forces exact 0.0 into the +pi branch.
+    c20_name = '/decoder/decoder/generator/Constant_20_output_0'
+    c20_patched = False
+    for t in m.graph.initializer:
+        if t.name == c20_name:
+            t.CopyFrom(numpy_helper.from_array(np.array(-1.1920929e-07, dtype=np.float32), name=c20_name))
+            c20_patched = True
+            break
+    if not c20_patched:
+        for n in m.graph.node:
+            if n.op_type == "Constant" and len(n.output) and n.output[0] == c20_name:
+                n.attribute[0].t.CopyFrom(numpy_helper.from_array(np.array(-1.1920929e-07, dtype=np.float32)))
+                c20_patched = True
+                break
+
     onnx.save(m, str(dst_path))
 
 
@@ -146,7 +165,7 @@ def _try_download_from_hf(name):
 
 def ensure_files(model):
     """Download the model and voices file if needed; supports Hugging Face updates with local fallback."""
-    if model == "kokoro-v1.0.fused_snake.onnx":
+    if model in ("kokoro-v1.0.extreme.onnx", "kokoro-v1.0.fused_snake.onnx"):
         fused_path = KOKORO_DIR / model
         dll_path = pathlib.Path("tools/snake_op.dll")
         if not fused_path.exists():
@@ -228,18 +247,23 @@ class KokoroNarrator:
         except ImportError:
             raise SystemExit("The Kokoro voice needs one extra package: uv pip install kokoro-onnx") from None
         dll_path = pathlib.Path("tools/snake_op.dll")
-        default_model = "kokoro-v1.0.fast.onnx"
+        if (KOKORO_DIR / "kokoro-v1.0.extreme.onnx").exists() and dll_path.exists():
+            default_model = "kokoro-v1.0.extreme.onnx"
+        elif (KOKORO_DIR / "kokoro-v1.0.fused_snake.onnx").exists() and dll_path.exists():
+            default_model = "kokoro-v1.0.fused_snake.onnx"
+        else:
+            default_model = "kokoro-v1.0.fast.onnx"
         model = os.environ.get("PAPERVOICE_KOKORO_MODEL", default_model)
         model = ensure_files(model)
 
         import onnxruntime as ort
-        threads = int(os.environ.get("PAPERVOICE_KOKORO_THREADS", "2"))
+        threads = int(os.environ.get("PAPERVOICE_KOKORO_THREADS", "4"))
         so = ort.SessionOptions()
         so.intra_op_num_threads = threads
         so.inter_op_num_threads = 1
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        if model == "kokoro-v1.0.fused_snake.onnx" and dll_path.exists():
+        if model in ("kokoro-v1.0.extreme.onnx", "kokoro-v1.0.fused_snake.onnx") and dll_path.exists():
             so.register_custom_ops_library(str(dll_path.resolve()))
         sess = ort.InferenceSession(str(KOKORO_DIR / model), so, providers=['CPUExecutionProvider'])
         self.kokoro = Kokoro.from_session(sess, str(KOKORO_DIR / VOICES_FILE))
@@ -275,13 +299,15 @@ class KokoroNarrator:
         return (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
     def sentences(self, text, pace=1.0):
-        """PCM16 bytes. Natural sentence prosody; splits only very long paragraphs (>350 chars)."""
-        parts = split_clauses(text, max_chars=350) if len(text) > 350 else [text]
+        """PCM16 bytes. Natural sentence prosody; splits long sentences into natural clauses for sub-second latency."""
+        max_chars = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "140"))
+        parts = split_clauses(text, max_chars=max_chars) if len(text) > max_chars else [text]
         for part in parts:
             yield self._pcm(part, pace)
 
     def chunks(self, text, pace=1.0):
         """[(letters, PCM16 bytes, None)]. Synthesizes sentences with complete natural acoustic context."""
-        parts = split_clauses(text, max_chars=350) if len(text) > 350 else [text]
+        max_chars = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "140"))
+        parts = split_clauses(text, max_chars=max_chars) if len(text) > max_chars else [text]
         return [(list(part), self._pcm(part, pace), None) for part in parts]
 

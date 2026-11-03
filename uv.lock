@@ -1303,7 +1303,7 @@ wheels = [
 
 [[package]]
 name = "papervoice"
-version = "2.0.1"
+version = "2.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "docling-slim", extra = ["convert-core", "feat-ocr-rapidocr", "format-pdf"] },

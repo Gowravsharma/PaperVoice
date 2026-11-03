@@ -36,7 +36,7 @@ TABLE_DIR = MODELS_DIR / "tableformer_fast"
 LAYOUT_DIR = MODELS_DIR / "layout_heron"
 OCR_DIR = MODELS_DIR / "ocr"
 
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 # This project's model repository on Hugging Face (set it once the files are uploaded; docs/RELEASING.md):
 # MODEL_REPO = os.environ.get("PDF_READER_MODEL_REPO", "Vibrant8849/PaperVoice")
 MODEL_REPO = "Vibrant8849/PaperVoice"
