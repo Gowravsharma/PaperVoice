@@ -209,7 +209,7 @@ class PageStreamer:
         self.cond = threading.Condition()
         self.t0 = time.perf_counter()
         self.engine, self.own_engine = engine, engine is None
-        self.load_seconds = 0.0 if engine else None
+        self.load_seconds = 0.0 if (engine and not callable(engine)) else None
         self.error = None
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
@@ -286,7 +286,10 @@ class PageStreamer:
 
     def _run(self):
         try:
-            if self.engine is None:
+            if callable(self.engine):
+                self.engine = self.engine()
+                self.load_seconds = getattr(self.engine, "load_seconds", 0.0)
+            elif self.engine is None:
                 self.engine = Engine(self.threads)
                 self.load_seconds = self.engine.load_seconds
             while True:

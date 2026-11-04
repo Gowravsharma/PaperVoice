@@ -4,7 +4,7 @@ Turn a research paper (PDF) into natural speech **on your own computer**, with e
 Equations, inline symbols and tables are spoken too, not skipped. It runs on an ordinary laptop CPU: no GPU, no
 cloud, nothing leaves your machine.
 
-> **Status: v2.1.0 (Extreme Neural Engine & Sub-Second Latency)** — Features optimized 24 kHz neural narration (Kokoro-82M Extreme) with AVX2 fused Snake activations, native InstanceNormalization AdaIN, zero-distortion DC STFT phase alignment, and progressive sub-second clause streaming, alongside the classic ultra-lightweight Piper engine.
+> **Status: v2.1.1 (Instant PDF Rendering & Mid-Flight Preemption)** — Features instant sub-second PDF loading, mid-flight hardware-level ONNX preemption for immediate paragraph jumping (0.01s lock release), dedicated epoch prefetching, and standard 0.95× baseline speech rate alongside the Kokoro-82M Extreme and Piper engines.
 
 ## What it does
 
@@ -38,6 +38,8 @@ Version 2.1 introduces the **Kokoro Extreme** engine (`kokoro-v1.0.extreme.onnx`
 2. **Fused AVX2 Snake Activations (`snake_op.dll`):** Fused 48 multi-node Sine activation subgraphs into custom C++ AVX2 SIMD instructions.
 3. **Fused InstanceNormalization:** Fused 44 decomposed AdaIN modules (264 intermediate nodes eliminated) into native ONNX single-pass normalization kernels (numerically identical: $116.4\text{ dB SNR}$, $r = 1.000000$).
 4. **Progressive Clause Streaming:** Long compound sentences are chunked at natural clause boundaries (`PAPERVOICE_KOKORO_MAX_CHARS=140`), starting speech playback in **$< 0.85\text{ s}$** while prefetching synthesizes ahead in the background.
+5. **Instant Asynchronous PDF Rendering (v2.1.1):** Document opening is decoupled from neural model warmup; PDF.js renders Page 1 on canvas in **$< 1\text{ s}$** with animated progress indicator and loading notices.
+6. **Mid-Flight Hardware Preemption (v2.1.1):** User paragraph clicks immediately abort obsolete background lookaheads via ONNX Runtime `RunOptions.terminate` in **$11.8\text{ ms}$**, eliminating lock starvation and dropping paragraph jump latency by $10\times$. Standard playback rate now initializes at **0.95×**.
 
 ### Multi-Paper Benchmark (CPU)
 

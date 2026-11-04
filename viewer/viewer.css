@@ -67,3 +67,71 @@ body { background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, -appl
 .textLayer ::selection { background: rgba(26, 95, 180, 0.25); }
 body.ctrl-read .textLayer :is(span, br) { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .page .mark { transition: none; } }
+
+/* Progress bar and loading indicator */
+.progress-bar-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  z-index: 20;
+}
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+.progress-bar.indeterminate {
+  width: 40%;
+  animation: bar-slide 1.2s infinite ease-in-out;
+}
+@keyframes bar-slide {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(120%); }
+  100% { transform: translateX(350%); }
+}
+
+.loading-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 36px 24px;
+  margin: 40px auto;
+  max-width: 460px;
+  background: var(--bar);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--page-shadow);
+  text-align: center;
+  animation: fadeIn 0.25s ease-out;
+}
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.loading-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+}
+.loading-sub {
+  font-size: 13px;
+  color: var(--muted);
+}

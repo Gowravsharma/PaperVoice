@@ -93,6 +93,14 @@ class Narrator:
         self.rate = self.voice.config.sample_rate
         self.speed = speed
 
+    def abort(self):
+        """Preemption stub for parity with KokoroNarrator."""
+        pass
+
+    def reset_abort(self):
+        """Preemption reset stub for parity with KokoroNarrator."""
+        pass
+
     @property
     def name(self):
         return getattr(getattr(self.voice, "config", None), "espeak_voice", "en_US-lessac-medium")

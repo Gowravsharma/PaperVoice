@@ -7,7 +7,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.mjs";
 
 const $ = (id) => document.getElementById(id);
 const pagesEl = $("pages");
-const state = { doc: null, pdf: null, pages: [], speed: 0.8, follow: true, lit: [], mark: null, zoom: 1 };
+const state = { doc: null, pdf: null, pages: [], speed: 0.95, follow: true, lit: [], mark: null, zoom: 1 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -29,6 +29,50 @@ async function api(path, options) {
 // spacing, hyphens or ligatures differ
 const norm = (s) => s.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
+function setProgress(percent = null, text = null) {
+  const container = $("progressBar");
+  const fill = $("progressFill");
+  if (!container || !fill) return;
+  if (percent === null) {
+    container.hidden = true;
+    fill.style.width = "0%";
+    fill.classList.remove("indeterminate");
+  } else {
+    container.hidden = false;
+    if (percent < 0) {
+      fill.classList.add("indeterminate");
+    } else {
+      fill.classList.remove("indeterminate");
+      fill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    }
+  }
+  if (text) status(text);
+}
+
+function showLoadingCard(title, sub = "") {
+  let card = $("loadingCard");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "loadingCard";
+    card.className = "loading-notice";
+    card.innerHTML = `
+      <div class="loading-spinner"></div>
+      <div class="loading-title"></div>
+      <div class="loading-sub"></div>
+    `;
+    pagesEl.prepend(card);
+  }
+  card.hidden = false;
+  card.querySelector(".loading-title").textContent = title;
+  card.querySelector(".loading-sub").textContent = sub;
+}
+
+function hideLoadingCard() {
+  const card = $("loadingCard");
+  if (card) card.remove();
+}
+
+
 // ------------------------------------------------------------------ opening a document
 async function waitForServer() {
   for (;;) {
@@ -44,23 +88,31 @@ async function waitForServer() {
 }
 
 async function openBytes(buf, name) {
-  // show the PDF at once; the reading engine may still be loading its models (a cold start takes 15-60 s),
-  // so connect to it in the background - a click made meanwhile starts reading as soon as it is ready
   player.stop();
   state.doc = null;
   showName(name);
-  state.pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)) }).promise;
-  await buildPages();
-  state.docReady = (async () => {
-    await waitForServer();
-    const info = await (await api("/api/open", {
-      method: "POST", headers: { "Content-Type": "application/pdf" }, body: buf,
-    })).json();
-    state.doc = info.doc;
-    status(`${state.pdf.numPages} pages · Ctrl+click in the text to start`);
-    return info.doc;
-  })();
-  state.docReady.catch((err) => status(`Error: ${err.message}`));
+  setProgress(-1, "Please wait, the PDF is loading…");
+  showLoadingCard("Please wait, the PDF is loading…", name);
+  try {
+    state.pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)) }).promise;
+    setProgress(70, "Rendering pages…");
+    await buildPages();
+    hideLoadingCard();
+    setProgress(null);
+    state.docReady = (async () => {
+      const info = await (await api("/api/open", {
+        method: "POST", headers: { "Content-Type": "application/pdf" }, body: buf,
+      })).json();
+      state.doc = info.doc;
+      status(`${state.pdf.numPages} pages · Ctrl+click in the text to start`);
+      return info.doc;
+    })();
+    state.docReady.catch((err) => status(`Error: ${err.message}`));
+  } catch (err) {
+    setProgress(null);
+    hideLoadingCard();
+    status(`Error: ${err.message}`);
+  }
 }
 
 function showName(name) {
@@ -69,12 +121,24 @@ function showName(name) {
 }
 
 async function openPath(path) {
-  status("Opening…");
-  const info = await (await api("/api/open", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }),
-  })).json();
-  const buf = await (await api(`/api/doc/${info.doc}/pdf`)).arrayBuffer();
-  await load({ ...info, name: path.split(/[\\/]/).pop() }, buf);
+  const fileName = path.split(/[\\/]/).pop();
+  setProgress(-1, "Please wait, the PDF is loading…");
+  showLoadingCard("Please wait, the PDF is loading…", fileName);
+  try {
+    const info = await (await api("/api/open", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }),
+    })).json();
+    setProgress(40, "Loading document…");
+    const buf = await (await api(`/api/doc/${info.doc}/pdf`)).arrayBuffer();
+    setProgress(75, "Rendering pages…");
+    await load({ ...info, name: fileName }, buf);
+    hideLoadingCard();
+    setProgress(null);
+  } catch (err) {
+    hideLoadingCard();
+    setProgress(null);
+    status(`Error: ${err.message}`);
+  }
 }
 
 async function load(info, buf) {
@@ -545,14 +609,27 @@ const player = {
   audio: new Audio(),
   queue: [], idx: 0, gen: 0, playing: false, current: null, more: null, urls: new Map(), log: [], lastEnded: null,
 
+  cancelPrefetch() {
+    if (state.doc) {
+      api(`/api/doc/${state.doc}/cancel`, { method: "POST" }).catch(() => {});
+    }
+  },
+
   async startAt({ page, x, y, text = "", at = null, before = "", after = "" }) {
     const g = ++this.gen;
     this.audio.pause();
-    if (!state.doc) { // the reading engine is still starting: remember the click
-      status("The reading engine is still loading - reading starts as soon as it is ready…");
+    this.cancelPrefetch();
+    if (!state.doc) {
+      status("Opening document…");
       await state.docReady;
       if (g !== this.gen) return;
     }
+    try {
+      const h = await (await fetch("/api/health")).json();
+      if (!h.ready) {
+        status("Reading models are warming up in background… reading starts automatically.");
+      }
+    } catch {}
     status(`Finding the sentence on page ${page}…`);
     const q = locateQuery({ page, x, y, text, at, before, after });
     const { sentence } = await (await api(`/api/doc/${state.doc}/locate?${q}`)).json();
@@ -581,7 +658,7 @@ const player = {
     let clip = null;
     for (let attempt = 0; attempt < 4 && !clip; attempt++) { // a busy server may drop a request: try again
       try {
-        clip = await this.url(item.id);
+        clip = await this.url(item.id, false);
       } catch (err) {
         if (g !== this.gen) return;
         status(`Waiting for the reading engine… (${err.message})`);
@@ -604,16 +681,17 @@ const player = {
     }
     this.audio.playbackRate = state.speed; // instant pitch-preserved speed scaling in browser
     this.audio.play().catch(() => {});
-    for (let k = 1; k <= 3; k++) if (this.queue[this.idx + k]) this.url(this.queue[this.idx + k].id).catch(() => {});
+    for (let k = 1; k <= 3; k++) if (this.queue[this.idx + k]) this.url(this.queue[this.idx + k].id, true).catch(() => {});
     this.topUp(g);
   },
 
-  url(id) {
+  url(id, isPrefetch = false) {
     // the sentence's audio and its word timing (for word-by-word highlighting), fetched once and played at state.speed
     if (!this.urls.has(id)) {
       const q = encodeURIComponent(id);
+      const prefetchArg = isPrefetch ? "?prefetch=1" : "";
       this.urls.set(id, Promise.all([
-        api(`/api/doc/${state.doc}/audio/${q}`).then((r) => r.blob()).then((b) => URL.createObjectURL(b)),
+        api(`/api/doc/${state.doc}/audio/${q}${prefetchArg}`).then((r) => r.blob()).then((b) => URL.createObjectURL(b)),
         api(`/api/doc/${state.doc}/timing/${q}`).then((r) => r.json()),
       ]).then(([url, timing]) => ({ url, timing })).catch((err) => {
         this.urls.delete(id); // do not keep a failure: the next attempt asks again
@@ -661,6 +739,7 @@ const player = {
 
   step(delta) {
     if (!this.queue.length) return;
+    this.cancelPrefetch();
     this.idx = Math.max(0, Math.min(this.queue.length - 1, this.idx + delta));
     this.playing = true;
     this.audio.pause();
@@ -668,6 +747,7 @@ const player = {
   },
 
   stop() {
+    this.cancelPrefetch();
     this.gen++;
     this.audio.pause();
     this.audio.removeAttribute("src");
@@ -771,10 +851,16 @@ $("highlight").addEventListener("change", (e) => setHighlight(e.target.value));
 let savedMode = "sentence";
 try { savedMode = localStorage.getItem("papervoice.highlight") || "sentence"; } catch {}
 setHighlight(savedMode);
+let savedSpeed = 0.95;
+try { savedSpeed = parseFloat(localStorage.getItem("papervoice.speed")) || 0.95; } catch {}
+state.speed = savedSpeed;
+$("speed").value = savedSpeed.toFixed(2);
+$("speedOut").textContent = `${savedSpeed.toFixed(2)}×`;
+
 $("speed").addEventListener("input", (e) => {
   state.speed = +(+e.target.value).toFixed(2);
   $("speedOut").textContent = `${state.speed.toFixed(2)}×`;
-  // immediately adjust playback rate on audio for instantaneous response with zero server load
+  try { localStorage.setItem("papervoice.speed", state.speed); } catch {}
   if (player.audio) {
     player.audio.playbackRate = state.speed;
   }
@@ -883,19 +969,29 @@ pagesEl.addEventListener("scroll", () => {
 setInterval(() => fetch("/api/health", { cache: "no-store" }).catch(() => {}), 60_000);
 
 async function openDoc(doc, name) {
-  // a document the browser extension has already sent to the server (?doc=<id>&name=<file>)
-  status("Opening…");
-  const buf = await (await api(`/api/doc/${encodeURIComponent(doc)}/pdf`)).arrayBuffer();
-  await load({ doc, name: name || "document.pdf" }, buf);
+  const docName = name || "document.pdf";
+  setProgress(-1, "Please wait, the PDF is loading…");
+  showLoadingCard("Please wait, the PDF is loading…", docName);
+  try {
+    setProgress(40, "Fetching document…");
+    const buf = await (await api(`/api/doc/${encodeURIComponent(doc)}/pdf`)).arrayBuffer();
+    setProgress(75, "Rendering pages…");
+    await load({ doc, name: docName }, buf);
+    hideLoadingCard();
+    setProgress(null);
+  } catch (err) {
+    hideLoadingCard();
+    setProgress(null);
+    status(`Error: ${err.message}`);
+  }
 }
 
 const params = new URLSearchParams(location.search);
 const path = params.get("path"); // ?path=C:/papers/x.pdf, handy for testing
 if (params.get("doc")) {
-  waitForServer().then(() => openDoc(params.get("doc"), params.get("name")))
-    .catch((err) => status(`Error: ${err.message}`));
+  openDoc(params.get("doc"), params.get("name"));
 } else if (path) {
-  waitForServer().then(() => openPath(path)).catch((err) => status(`Error: ${err.message}`));
+  openPath(path);
 } else {
   status("Open a PDF");
   // a file can be opened at once; this only reports when the reading engine is ready

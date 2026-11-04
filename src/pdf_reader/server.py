@@ -296,17 +296,72 @@ class Session:
         return sentence.id
 
 
+class PrefetchWorker:
+    """Dedicated single-task background prefetcher with instant cancellation."""
+
+    def __init__(self, server):
+        self.server = server
+        self.cond = threading.Condition()
+        self.job = None  # (generation, doc_id, [sids], speed)
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def submit(self, generation, doc_id, sids, speed):
+        with self.cond:
+            self.job = (generation, doc_id, sids, speed)
+            self.cond.notify()
+
+    def clear(self):
+        with self.cond:
+            self.job = None
+            self.cond.notify()
+
+    def _run(self):
+        while self.running:
+            with self.cond:
+                while self.job is None and self.running:
+                    self.cond.wait()
+                if not self.running:
+                    break
+                generation, doc_id, sids, speed = self.job
+                self.job = None
+
+            for sid in sids:
+                if generation != self.server.generation:
+                    break
+                with self.cond:
+                    if self.job is not None:
+                        break  # Superseded by newer lookahead
+                self.server._synth_prefetch(doc_id, sid, speed, generation)
+
+
 class Server:
+
     def __init__(self):
         self.sessions = {}
         self.engine = None
         self.narrator = None
         self.ready = threading.Event()
         self.voice_lock = threading.Lock()
+        self.generation = 0
+        self.prefetch_lock = threading.Lock()
         self.inflight, self.inflight_lock = {}, threading.Lock()  # sentences being synthesised right now
         self.audio_cache = OrderedDict()  # (doc, sid, speed) -> wav bytes, LRU
-        self.prefetcher = ThreadPoolExecutor(max_workers=1)
+        self.prefetcher = PrefetchWorker(self)
         threading.Thread(target=self._load, daemon=True).start()
+
+    def cancel_prefetch(self):
+        """Immediately abort any active background prefetch tasks and invalidate pending queue."""
+        with self.prefetch_lock:
+            self.generation += 1
+            if self.narrator and hasattr(self.narrator, "abort"):
+                self.narrator.abort()
+        self.prefetcher.clear()
+
+    def get_engine(self):
+        self.ready.wait()
+        return self.engine
 
     def _load(self):
         from pdf_reader.models import ensure
@@ -316,13 +371,15 @@ class Server:
         t = time.perf_counter()
         self.narrator = make_narrator()
         voice_desc = getattr(self.narrator, "voice_name", getattr(self.narrator, "name", "Piper"))
+        model_desc = getattr(self.narrator, "model_name", "")
+        model_info = f", {model_desc}" if model_desc else ""
         engine_desc = "Kokoro" if hasattr(self.narrator, "voice_name") else "Piper"
         self.engine = Engine()
         self.ready.set()
-        print(f"models loaded in {time.perf_counter() - t:.1f}s; voice engine: {engine_desc} ({voice_desc}); ready", flush=True)
+        print(f"models loaded in {time.perf_counter() - t:.1f}s; voice engine: {engine_desc} ({voice_desc}{model_info}); ready", flush=True)
 
     def open(self, data=None, path=None, name=None):
-        self.ready.wait()
+        # Technique 2: Instant Asynchronous PDF Rendering - do not block on self.ready.wait()!
         if path:
             data = Path(path).read_bytes()
         doc_id = hashlib.sha256(data).hexdigest()[:16]
@@ -333,7 +390,7 @@ class Server:
             if not pdf_path.exists():
                 pdf_path.write_bytes(data)
             name = Path(path).name if path else (name or "document.pdf")
-            self.sessions[doc_id] = Session(doc_id, pdf_path, self.engine, name)
+            self.sessions[doc_id] = Session(doc_id, pdf_path, self.get_engine, name)
         self.activate(doc_id)
         s = self.sessions[doc_id]
         return {"doc": doc_id, "pages": s.n_pages, "name": s.name, "indexed": sorted(s.streamer.pages)}
@@ -347,10 +404,22 @@ class Server:
         for other_id, s in self.sessions.items():
             s.streamer.pause(other_id != doc_id)
 
-    def _synth(self, doc_id, sid, speed):
-        """As _synth_now, but a sentence already being synthesised (the viewer asks for its audio and its timing
-        at the same moment) is waited for instead of being made twice: the second request used to queue behind
-        the first and its look-ahead, and the voice started only when both were done (2.9 s -> 6.8 s)."""
+    def _synth_prefetch(self, doc_id, sid, speed, generation):
+        key = (doc_id, sid, round(speed, 2))
+        with self.inflight_lock:
+            if key in self.audio_cache:
+                return
+        if generation != self.generation:
+            return
+        try:
+            self._synth(doc_id, sid, speed, is_prefetch=True, generation=generation)
+        except Exception:
+            pass
+
+    def _synth(self, doc_id, sid, speed, is_prefetch=False, generation=None):
+        """As _synth_now, but a sentence already being synthesised is waited for instead of being made twice."""
+        if is_prefetch and (generation is not None and generation != self.generation):
+            return None
         key = (doc_id, sid, round(speed, 2))
         with self.inflight_lock:
             if key in self.audio_cache:
@@ -363,39 +432,55 @@ class Server:
         if not owner:
             event.wait()
             got = self.audio_cache.get(key)
-            return got if got is not None else self._synth_now(doc_id, sid, speed)
+            return got if got is not None else self._synth_now(doc_id, sid, speed, is_prefetch, generation)
         try:
-            return self._synth_now(doc_id, sid, speed)
+            return self._synth_now(doc_id, sid, speed, is_prefetch, generation)
         finally:
             with self.inflight_lock:
                 del self.inflight[key]
             event.set()
 
-    def _synth_now(self, doc_id, sid, speed):
-        """(wav bytes, timing) for one sentence, cached. timing: {"duration", "words": [{"w", "start", "end",
-        "printed"}], "printed": [printed words]} - when each spoken word is said and which printed word it is."""
+    def _synth_now(self, doc_id, sid, speed, is_prefetch=False, generation=None):
+        """(wav bytes, timing) for one sentence, cached."""
+        if is_prefetch and (generation is not None and generation != self.generation):
+            return None
+        self.ready.wait()  # Voice models must be ready for synthesis
         from pdf_reader.narration import PAUSES
         from pdf_reader.timing import spoken_to_printed, word_times, word_times_aligned
         key = (doc_id, sid, round(speed, 2))
         if key in self.audio_cache:
             self.audio_cache.move_to_end(key)
             return self.audio_cache[key]
-        session = self.sessions[doc_id]
+        session = self.sessions.get(doc_id)
+        if not session:
+            return None
         item = session.item(sid)
         if not item:
             return None
         printed = item["text"]
         spoken, pace, pause = session.voice_unit(sid)
+        if is_prefetch and (generation is not None and generation != self.generation):
+            return None
         with self.voice_lock:
+            if is_prefetch and (generation is not None and generation != self.generation):
+                return None
+            if not is_prefetch and hasattr(self.narrator, "reset_abort"):
+                self.narrator.reset_abort()
             self.narrator.speed = speed
-            chunks = self.narrator.chunks(spoken, pace)
-            gap = self.narrator.silence(PAUSES[pause])  # the planned pause, at the end of this sentence's clip
+            try:
+                chunks = self.narrator.chunks(spoken, pace)
+            except Exception as e:
+                err_str = str(e).lower()
+                if "terminate" in err_str or "abort" in err_str:
+                    return None
+                raise
+            gap = self.narrator.silence(PAUSES[pause])
             rate = self.narrator.rate
         speech = b"".join(a for _, a, _ in chunks)
         pcm = speech + gap
         tokens = spoken.split()
         times = None
-        if all(al for _, _, al in chunks):  # exact: the voice's own phoneme durations
+        if all(al for _, _, al in chunks):
             times = word_times_aligned([(al, len(a) // 2) for _, a, al in chunks], tokens, rate)
         if times is None:
             times = word_times([(ph, len(a) / 2 / rate) for ph, a, _ in chunks], tokens)
@@ -410,28 +495,25 @@ class Server:
             w.setframerate(rate)
             w.writeframes(pcm)
         self.audio_cache[key] = (buf.getvalue(), timing)
-        # keep the most recent clips up to AUDIO_CACHE_BYTES (a few minutes of speech): replay and the look-ahead
-        # are served from here, older sentences are synthesised again if needed (~0.3 s each)
         while len(self.audio_cache) > 1 and sum(len(w) for w, _ in self.audio_cache.values()) > AUDIO_CACHE_BYTES:
             self.audio_cache.popitem(last=False)
         return self.audio_cache[key]
 
-    def audio(self, doc_id, sid, speed, prefetch=True):
-        # the listener is on this page: the indexer prepares it and the pages after it first, so the next
-        # page is ready before playback gets there
+    def audio(self, doc_id, sid, speed, is_prefetch=False):
         self.sessions[doc_id].streamer.focus(int(sid.split(".")[0]))
-        got = self._synth(doc_id, sid, speed)
-        if prefetch:  # synthesise what comes next while this sentence plays
-            def ahead():
-                for nxt in self.sessions[doc_id].sequence(sid, 3)[1:]:
-                    self._synth(doc_id, nxt["id"], speed)
-            self.prefetcher.submit(ahead)
+        key = (doc_id, sid, round(speed, 2))
+        if not is_prefetch and key not in self.audio_cache:
+            # Active playback request not in cache: abort obsolete prefetch tasks immediately!
+            self.cancel_prefetch()
+        got = self._synth(doc_id, sid, speed, is_prefetch=is_prefetch, generation=self.generation)
+        if not is_prefetch and got:
+            nxt_sids = [nxt["id"] for nxt in self.sessions[doc_id].sequence(sid, 4)[1:]]
+            self.prefetcher.submit(self.generation, doc_id, nxt_sids, speed)
         return got[0] if got else None
 
     def timing(self, doc_id, sid, speed):
         got = self._synth(doc_id, sid, speed)
         return got[1] if got else None
-
 
 SERVER = None
 
@@ -474,6 +556,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"stopping": True})
                 threading.Thread(target=lambda: (time.sleep(0.3), os._exit(0)), daemon=True).start()
                 return
+            parts = url.path.strip("/").split("/")
+            if len(parts) >= 4 and parts[:2] == ["api", "doc"] and parts[3] == "cancel":
+                SERVER.cancel_prefetch()
+                return self._send(200, {"cancelled": True})
             if url.path != "/api/open":
                 return self._send(404, {"error": "not found"})
             name = parse_qs(url.query).get("name", [None])[0]
@@ -528,6 +614,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(200, {"page": p, "ready": False})
                     return self._send(200, s.page_json(pg))
                 if kind == "locate":
+                    SERVER.cancel_prefetch()  # User clicked a sentence: abort obsolete prefetch tasks!
                     at = int(q["at"]) if q.get("at", "").isdigit() else None
                     sid = s.locate(int(q["page"]), float(q["x"]), float(q["y"]), q.get("text", ""), at,
                                    q.get("before", ""), q.get("after", ""))
@@ -535,7 +622,8 @@ class Handler(BaseHTTPRequestHandler):
                 if kind == "sequence":
                     return self._send(200, s.sequence(q["from"], int(q.get("count", 20))))
                 if kind == "audio":
-                    wav = SERVER.audio(s.id, parts[4], float(q.get("speed", 1.0)))
+                    is_prefetch = q.get("prefetch", "0") in ("1", "true")
+                    wav = SERVER.audio(s.id, parts[4], float(q.get("speed", 1.0)), is_prefetch=is_prefetch)
                     return self._send(200, wav, "audio/wav") if wav else self._send(404, {"error": "no sentence"})
                 if kind == "timing":
                     t = SERVER.timing(s.id, parts[4], float(q.get("speed", 1.0)))

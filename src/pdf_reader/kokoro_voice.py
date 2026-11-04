@@ -19,12 +19,14 @@ first use, from the kokoro-onnx project's release.
 """
 import os
 import pathlib
+import threading
 
 import numpy as np
 
-from pdf_reader.models import MODELS_DIR, _download, sha256
+from pdf_reader.models import ROOT, MODELS_DIR, _download, sha256
 
 KOKORO_DIR = MODELS_DIR / "kokoro"
+SNAKE_DLL = ROOT / "tools" / "snake_op.dll"
 RELEASE_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 VOICES_FILE = "voices-v1.0.bin"
 # SHA-256 of the files as downloaded from that release (recorded when this socket was added)
@@ -167,7 +169,7 @@ def ensure_files(model):
     """Download the model and voices file if needed; supports Hugging Face updates with local fallback."""
     if model in ("kokoro-v1.0.extreme.onnx", "kokoro-v1.0.fused_snake.onnx"):
         fused_path = KOKORO_DIR / model
-        dll_path = pathlib.Path("tools/snake_op.dll")
+        dll_path = SNAKE_DLL if SNAKE_DLL.exists() else pathlib.Path("tools/snake_op.dll")
         if not fused_path.exists():
             if not _try_download_from_hf(model):
                 print(f"Notice: {model} not found on Hugging Face; checking local fallback...", flush=True)
@@ -246,7 +248,7 @@ class KokoroNarrator:
             from kokoro_onnx import Kokoro
         except ImportError:
             raise SystemExit("The Kokoro voice needs one extra package: uv pip install kokoro-onnx") from None
-        dll_path = pathlib.Path("tools/snake_op.dll")
+        dll_path = SNAKE_DLL if SNAKE_DLL.exists() else pathlib.Path("tools/snake_op.dll")
         if (KOKORO_DIR / "kokoro-v1.0.extreme.onnx").exists() and dll_path.exists():
             default_model = "kokoro-v1.0.extreme.onnx"
         elif (KOKORO_DIR / "kokoro-v1.0.fused_snake.onnx").exists() and dll_path.exists():
@@ -255,6 +257,7 @@ class KokoroNarrator:
             default_model = "kokoro-v1.0.fast.onnx"
         model = os.environ.get("PAPERVOICE_KOKORO_MODEL", default_model)
         model = ensure_files(model)
+        self.model_name = model
 
         import onnxruntime as ort
         threads = int(os.environ.get("PAPERVOICE_KOKORO_THREADS", "4"))
@@ -267,12 +270,47 @@ class KokoroNarrator:
             so.register_custom_ops_library(str(dll_path.resolve()))
         sess = ort.InferenceSession(str(KOKORO_DIR / model), so, providers=['CPUExecutionProvider'])
         self.kokoro = Kokoro.from_session(sess, str(KOKORO_DIR / VOICES_FILE))
+
+        # Runtime preemption support for low-latency paragraph skipping & prefetch cancellation
+        self._active_ro = None
+        self._aborted = threading.Event()
+        self._ro_lock = threading.Lock()
+        orig_run = self.kokoro.sess.run
+
+        def run_with_abort(*args, **kwargs):
+            if self._aborted.is_set():
+                raise RuntimeError("Kokoro inference aborted before execution")
+            ro = ort.RunOptions()
+            with self._ro_lock:
+                self._active_ro = ro
+            kwargs["run_options"] = ro
+            try:
+                if self._aborted.is_set():
+                    ro.terminate = True
+                return orig_run(*args, **kwargs)
+            finally:
+                with self._ro_lock:
+                    if self._active_ro is ro:
+                        self._active_ro = None
+
+        self.kokoro.sess.run = run_with_abort
         self.voice_name = voice or os.environ.get("PAPERVOICE_KOKORO_VOICE", "af_heart")
         if self.voice_name not in self.kokoro.get_voices():
             raise SystemExit(f"Kokoro has no voice {self.voice_name!r}; choose one of: "
                              f"{', '.join(self.kokoro.get_voices())}")
         self.rate = 24000
         self.speed = speed
+
+    def abort(self):
+        """Preempt any active Kokoro inference mid-flight so high-priority requests can run."""
+        self._aborted.set()
+        with self._ro_lock:
+            if self._active_ro is not None:
+                self._active_ro.terminate = True
+
+    def reset_abort(self):
+        """Reset the abort state before running high-priority inference."""
+        self._aborted.clear()
 
     @property
     def name(self):
@@ -300,14 +338,25 @@ class KokoroNarrator:
 
     def sentences(self, text, pace=1.0):
         """PCM16 bytes. Natural sentence prosody; splits long sentences into natural clauses for sub-second latency."""
+        if self._aborted.is_set():
+            raise RuntimeError("Kokoro inference aborted")
         max_chars = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "140"))
         parts = split_clauses(text, max_chars=max_chars) if len(text) > max_chars else [text]
         for part in parts:
+            if self._aborted.is_set():
+                raise RuntimeError("Kokoro inference aborted")
             yield self._pcm(part, pace)
 
     def chunks(self, text, pace=1.0):
         """[(letters, PCM16 bytes, None)]. Synthesizes sentences with complete natural acoustic context."""
+        if self._aborted.is_set():
+            raise RuntimeError("Kokoro inference aborted")
         max_chars = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "140"))
         parts = split_clauses(text, max_chars=max_chars) if len(text) > max_chars else [text]
-        return [(list(part), self._pcm(part, pace), None) for part in parts]
+        out = []
+        for part in parts:
+            if self._aborted.is_set():
+                raise RuntimeError("Kokoro inference aborted")
+            out.append((list(part), self._pcm(part, pace), None))
+        return out
 
