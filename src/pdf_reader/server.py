@@ -342,6 +342,8 @@ class Server:
         self.sessions = {}
         self.engine = None
         self.narrator = None
+        self.voice_ready = threading.Event()
+        self.engine_ready = threading.Event()
         self.ready = threading.Event()
         self.voice_lock = threading.Lock()
         self.generation = 0
@@ -360,23 +362,38 @@ class Server:
         self.prefetcher.clear()
 
     def get_engine(self):
-        self.ready.wait()
+        self.engine_ready.wait()
         return self.engine
 
     def _load(self):
         from pdf_reader.models import ensure
-        from pdf_reader.read_aloud import make_narrator
         ensure()  # first start of a fresh install: downloads the models (models.py)
-        from pdf_reader.stream import Engine
         t = time.perf_counter()
-        self.narrator = make_narrator()
-        voice_desc = getattr(self.narrator, "voice_name", getattr(self.narrator, "name", "Piper"))
-        model_desc = getattr(self.narrator, "model_name", "")
-        model_info = f", {model_desc}" if model_desc else ""
-        engine_desc = "Kokoro" if hasattr(self.narrator, "voice_name") else "Piper"
-        self.engine = Engine()
+
+        def load_voice():
+            from pdf_reader.read_aloud import make_narrator
+            self.narrator = make_narrator()
+            self.voice_ready.set()
+            voice_desc = getattr(self.narrator, "voice_name", getattr(self.narrator, "name", "Piper"))
+            model_desc = getattr(self.narrator, "model_name", "")
+            model_info = f", {model_desc}" if model_desc else ""
+            engine_desc = "Kokoro" if hasattr(self.narrator, "voice_name") else "Piper"
+            print(f"Voice engine loaded in {time.perf_counter() - t:.1f}s ({engine_desc} {voice_desc}{model_info})", flush=True)
+
+        def load_doc_engine():
+            from pdf_reader.stream import Engine
+            self.engine = Engine()
+            self.engine_ready.set()
+            print(f"Document analysis engine loaded in {time.perf_counter() - t:.1f}s", flush=True)
+
+        tv = threading.Thread(target=load_voice, daemon=True)
+        te = threading.Thread(target=load_doc_engine, daemon=True)
+        tv.start()
+        te.start()
+        tv.join()
+        te.join()
         self.ready.set()
-        print(f"models loaded in {time.perf_counter() - t:.1f}s; voice engine: {engine_desc} ({voice_desc}{model_info}); ready", flush=True)
+        print(f"All engines fully initialized in {time.perf_counter() - t:.1f}s; ready", flush=True)
 
     def open(self, data=None, path=None, name=None):
         # Technique 2: Instant Asynchronous PDF Rendering - do not block on self.ready.wait()!
@@ -444,7 +461,7 @@ class Server:
         """(wav bytes, timing) for one sentence, cached."""
         if is_prefetch and (generation is not None and generation != self.generation):
             return None
-        self.ready.wait()  # Voice models must be ready for synthesis
+        self.voice_ready.wait()  # Voice models must be ready for synthesis
         from pdf_reader.narration import PAUSES
         from pdf_reader.timing import spoken_to_printed, word_times, word_times_aligned
         key = (doc_id, sid, round(speed, 2))
@@ -594,7 +611,10 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/health":
                 engine_name = "kokoro" if hasattr(SERVER.narrator, "voice_name") else "piper"
                 voice_name = getattr(SERVER.narrator, "voice_name", getattr(SERVER.narrator, "name", "en_US-lessac-medium"))
-                return self._send(200, {"ready": SERVER.ready.is_set(), "docs": list(SERVER.sessions),
+                return self._send(200, {"ready": SERVER.ready.is_set(),
+                                         "voice_ready": SERVER.voice_ready.is_set(),
+                                         "engine_ready": SERVER.engine_ready.is_set(),
+                                         "docs": list(SERVER.sessions),
                                          "code": CODE_VERSION, "engine": engine_name, "voice": voice_name})
             if len(parts) >= 4 and parts[:2] == ["api", "doc"]:
                 s = SERVER.sessions.get(parts[2])

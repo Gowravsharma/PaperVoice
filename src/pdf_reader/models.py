@@ -137,7 +137,7 @@ def ensure(verbose=False):
         print("all model files are in place")
     try:
         from pdf_reader.kokoro_voice import ensure_files
-        ensure_files("kokoro-v1.0.fused_snake.onnx")
+        ensure_files("kokoro-v1.0.extreme.onnx")
     except Exception as e:
         if verbose:
             print(f"Kokoro model status: {e}", flush=True)

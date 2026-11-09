@@ -29,10 +29,14 @@ KOKORO_DIR = MODELS_DIR / "kokoro"
 SNAKE_DLL = ROOT / "tools" / "snake_op.dll"
 RELEASE_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 VOICES_FILE = "voices-v1.0.bin"
-# SHA-256 of the files as downloaded from that release (recorded when this socket was added)
+# SHA-256 of verified Kokoro models and extensions
 SHA256 = {
     "kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+    "kokoro-v1.0.fast.onnx": "b330e0a1dbd130b26bddf3fb3585ea9168a3679b1b29ef13c8412b6d4eed031d",
+    "kokoro-v1.0.extreme.onnx": "186242c7c87edd3b7e22ee240685e198c2bfc564b4b57fae6cc838806c5afa5b",
+    "kokoro-v1.0.fused_snake.onnx": "1abf477b767d56639f154c7a66ff3b55baa32454e043e688137403ad027b94f1",
     "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+    "snake_op.dll": "568e4c9fb3419703a06dc5c71cb4011d6eba4b1d1571c5bb9747ded1d6327660",
 }
 
 
@@ -170,11 +174,16 @@ def ensure_files(model):
     if model in ("kokoro-v1.0.extreme.onnx", "kokoro-v1.0.fused_snake.onnx"):
         fused_path = KOKORO_DIR / model
         dll_path = SNAKE_DLL if SNAKE_DLL.exists() else pathlib.Path("tools/snake_op.dll")
+        if fused_path.exists() and model in SHA256 and sha256(fused_path) != SHA256[model]:
+            print(f"Notice: replacing outdated/invalid {model}...", flush=True)
+            fused_path.unlink()
         if not fused_path.exists():
-            if not _try_download_from_hf(model):
-                print(f"Notice: {model} not found on Hugging Face; checking local fallback...", flush=True)
+            if not _try_download_from_hf(model) or (model in SHA256 and sha256(fused_path) != SHA256[model]):
+                print(f"Notice: {model} not available on Hugging Face; using fast model fallback...", flush=True)
+                if fused_path.exists():
+                    fused_path.unlink()
                 return ensure_files("kokoro-v1.0.fast.onnx")
-        if not dll_path.exists():
+        if not dll_path.exists() or (dll_path.exists() and "snake_op.dll" in SHA256 and sha256(dll_path) != SHA256["snake_op.dll"]):
             if _try_download_from_hf("snake_op.dll"):
                 downloaded_dll = KOKORO_DIR / "snake_op.dll"
                 if downloaded_dll.exists():
@@ -189,12 +198,19 @@ def ensure_files(model):
 
     if model == "kokoro-v1.0.fast.onnx":
         fast_path = KOKORO_DIR / model
+        if fast_path.exists() and "kokoro-v1.0.fast.onnx" in SHA256 and sha256(fast_path) != SHA256["kokoro-v1.0.fast.onnx"]:
+            print("Notice: replacing outdated/distorted kokoro-v1.0.fast.onnx with fixed version...", flush=True)
+            fast_path.unlink()
         if not fast_path.exists():
-            if not _try_download_from_hf(model):
+            if _try_download_from_hf(model):
+                if fast_path.exists() and sha256(fast_path) != SHA256["kokoro-v1.0.fast.onnx"]:
+                    print("Notice: downloaded kokoro-v1.0.fast.onnx from Hugging Face is the older distorted build; generating fixed version locally...", flush=True)
+                    fast_path.unlink()
+            if not fast_path.exists():
                 ensure_files("kokoro-v1.0.onnx")
                 ensure_files(VOICES_FILE)
                 try:
-                    print("Optimizing kokoro-v1.0.onnx (replacing STFT with fast Conv1D)...", flush=True)
+                    print("Optimizing kokoro-v1.0.onnx (replacing STFT with fast Conv1D and DC phase fix)...", flush=True)
                     _patch_kokoro_stft(KOKORO_DIR / "kokoro-v1.0.onnx", fast_path)
                 except Exception as e:
                     print(f"Warning: could not patch STFT ({e}); falling back to kokoro-v1.0.onnx", flush=True)
@@ -204,15 +220,17 @@ def ensure_files(model):
 
     for name in (model, VOICES_FILE):
         path = KOKORO_DIR / name
-        if path.exists():
-            continue
-        # Try Hugging Face first
-        if not _try_download_from_hf(name):
-            print(f"downloading {name} (Kokoro upstream release, once)", flush=True)
-            _download(RELEASE_URL + name, path)
-        if name in SHA256 and sha256(path) != SHA256[name]:
+        if path.exists() and name in SHA256 and sha256(path) != SHA256[name]:
+            print(f"Notice: replacing outdated/invalid {name}...", flush=True)
             path.unlink()
-            raise RuntimeError(f"{name} did not verify (different from the tested file); removed")
+        if not path.exists():
+            # Try Hugging Face first
+            if not _try_download_from_hf(name):
+                print(f"downloading {name} (Kokoro upstream release, once)", flush=True)
+                _download(RELEASE_URL + name, path)
+            if name in SHA256 and sha256(path) != SHA256[name]:
+                path.unlink()
+                raise RuntimeError(f"{name} did not verify (different from the tested file); removed")
     return model
 
 
@@ -249,14 +267,8 @@ class KokoroNarrator:
         except ImportError:
             raise SystemExit("The Kokoro voice needs one extra package: uv pip install kokoro-onnx") from None
         dll_path = SNAKE_DLL if SNAKE_DLL.exists() else pathlib.Path("tools/snake_op.dll")
-        if (KOKORO_DIR / "kokoro-v1.0.extreme.onnx").exists() and dll_path.exists():
-            default_model = "kokoro-v1.0.extreme.onnx"
-        elif (KOKORO_DIR / "kokoro-v1.0.fused_snake.onnx").exists() and dll_path.exists():
-            default_model = "kokoro-v1.0.fused_snake.onnx"
-        else:
-            default_model = "kokoro-v1.0.fast.onnx"
-        model = os.environ.get("PAPERVOICE_KOKORO_MODEL", default_model)
-        model = ensure_files(model)
+        default_model = os.environ.get("PAPERVOICE_KOKORO_MODEL", "kokoro-v1.0.extreme.onnx")
+        model = ensure_files(default_model)
         self.model_name = model
 
         import onnxruntime as ort
