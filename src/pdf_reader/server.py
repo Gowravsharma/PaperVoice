@@ -422,7 +422,7 @@ class Server:
             s.streamer.pause(other_id != doc_id)
 
     def _synth_prefetch(self, doc_id, sid, speed, generation):
-        key = (doc_id, sid, round(speed, 2))
+        key = (doc_id, sid, round(speed, 2), None)
         with self.inflight_lock:
             if key in self.audio_cache:
                 return
@@ -433,11 +433,11 @@ class Server:
         except Exception:
             pass
 
-    def _synth(self, doc_id, sid, speed, is_prefetch=False, generation=None):
+    def _synth(self, doc_id, sid, speed, is_prefetch=False, generation=None, chunk_idx=None):
         """As _synth_now, but a sentence already being synthesised is waited for instead of being made twice."""
         if is_prefetch and (generation is not None and generation != self.generation):
             return None
-        key = (doc_id, sid, round(speed, 2))
+        key = (doc_id, sid, round(speed, 2), chunk_idx)
         with self.inflight_lock:
             if key in self.audio_cache:
                 self.audio_cache.move_to_end(key)
@@ -449,22 +449,22 @@ class Server:
         if not owner:
             event.wait()
             got = self.audio_cache.get(key)
-            return got if got is not None else self._synth_now(doc_id, sid, speed, is_prefetch, generation)
+            return got if got is not None else self._synth_now(doc_id, sid, speed, is_prefetch, generation, chunk_idx=chunk_idx)
         try:
-            return self._synth_now(doc_id, sid, speed, is_prefetch, generation)
+            return self._synth_now(doc_id, sid, speed, is_prefetch, generation, chunk_idx=chunk_idx)
         finally:
             with self.inflight_lock:
                 del self.inflight[key]
             event.set()
 
-    def _synth_now(self, doc_id, sid, speed, is_prefetch=False, generation=None):
-        """(wav bytes, timing) for one sentence, cached."""
+    def _synth_now(self, doc_id, sid, speed, is_prefetch=False, generation=None, chunk_idx=None):
+        """(wav bytes, timing) for one sentence or individual chunk, cached."""
         if is_prefetch and (generation is not None and generation != self.generation):
             return None
         self.voice_ready.wait()  # Voice models must be ready for synthesis
         from pdf_reader.narration import PAUSES
         from pdf_reader.timing import spoken_to_printed, word_times, word_times_aligned
-        key = (doc_id, sid, round(speed, 2))
+        key = (doc_id, sid, round(speed, 2), chunk_idx)
         if key in self.audio_cache:
             self.audio_cache.move_to_end(key)
             return self.audio_cache[key]
@@ -478,31 +478,54 @@ class Server:
         spoken, pace, pause = session.voice_unit(sid)
         if is_prefetch and (generation is not None and generation != self.generation):
             return None
-        with self.voice_lock:
-            if is_prefetch and (generation is not None and generation != self.generation):
-                return None
-            if not is_prefetch and hasattr(self.narrator, "reset_abort"):
-                self.narrator.reset_abort()
-            self.narrator.speed = speed
-            try:
-                chunks = self.narrator.chunks(spoken, pace)
-            except Exception as e:
-                err_str = str(e).lower()
-                if "terminate" in err_str or "abort" in err_str:
+
+        # Give 100% CPU to speech synthesis by pausing background document indexing
+        streamer = getattr(session, "streamer", None)
+        if streamer and not is_prefetch:
+            streamer.pause(True)
+
+        total_chunks = 1
+        spoken_part = spoken
+        try:
+            with self.voice_lock:
+                if is_prefetch and (generation is not None and generation != self.generation):
                     return None
-                raise
-            gap = self.narrator.silence(PAUSES[pause])
-            rate = self.narrator.rate
+                if not is_prefetch and hasattr(self.narrator, "reset_abort"):
+                    self.narrator.reset_abort()
+                self.narrator.speed = speed
+                try:
+                    if chunk_idx is not None and hasattr(self.narrator, "chunk"):
+                        chunks, total_chunks, spoken_part = self.narrator.chunk(spoken, chunk_idx, pace)
+                    else:
+                        chunks = self.narrator.chunks(spoken, pace)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "terminate" in err_str or "abort" in err_str:
+                        return None
+                    raise
+                is_last = chunk_idx is None or chunk_idx >= total_chunks - 1
+                if is_last:
+                    gap = self.narrator.silence(PAUSES.get(pause, 0.12))
+                elif spoken_part.rstrip()[-1:] in (",", ";", ":", "—", "–", "-"):
+                    gap = self.narrator.silence(PAUSES.get("clause", 0.08))
+                else:
+                    gap = self.narrator.silence(0.02)
+                rate = self.narrator.rate
+        finally:
+            if streamer and not is_prefetch:
+                streamer.pause(False)
         speech = b"".join(a for _, a, _ in chunks)
         pcm = speech + gap
-        tokens = spoken.split()
+        tokens = spoken_part.split()
         times = None
         if all(al for _, _, al in chunks):
             times = word_times_aligned([(al, len(a) // 2) for _, a, al in chunks], tokens, rate)
         if times is None:
             times = word_times([(ph, len(a) / 2 / rate) for ph, a, _ in chunks], tokens)
         owners = spoken_to_printed(printed, tokens) if printed else [None] * len(tokens)
-        timing = {"duration": len(pcm) / 2 / rate, "speech": len(speech) / 2 / rate, "printed": printed.split(),
+        timing = {"duration": len(pcm) / 2 / rate, "speech": len(speech) / 2 / rate,
+                  "total_chunks": total_chunks, "chunk": chunk_idx if chunk_idx is not None else 0,
+                  "printed": printed.split(),
                   "words": [{"w": t, "start": round(a, 3), "end": round(b, 3), "printed": o}
                             for t, (a, b), o in zip(tokens, times, owners)]}
         buf = io.BytesIO()
@@ -516,20 +539,20 @@ class Server:
             self.audio_cache.popitem(last=False)
         return self.audio_cache[key]
 
-    def audio(self, doc_id, sid, speed, is_prefetch=False):
+    def audio(self, doc_id, sid, speed, is_prefetch=False, chunk_idx=None):
         self.sessions[doc_id].streamer.focus(int(sid.split(".")[0]))
-        key = (doc_id, sid, round(speed, 2))
+        key = (doc_id, sid, round(speed, 2), chunk_idx)
         if not is_prefetch and key not in self.audio_cache:
             # Active playback request not in cache: abort obsolete prefetch tasks immediately!
             self.cancel_prefetch()
-        got = self._synth(doc_id, sid, speed, is_prefetch=is_prefetch, generation=self.generation)
-        if not is_prefetch and got:
+        got = self._synth(doc_id, sid, speed, is_prefetch=is_prefetch, generation=self.generation, chunk_idx=chunk_idx)
+        if not is_prefetch and got and chunk_idx is None:
             nxt_sids = [nxt["id"] for nxt in self.sessions[doc_id].sequence(sid, 4)[1:]]
             self.prefetcher.submit(self.generation, doc_id, nxt_sids, speed)
         return got[0] if got else None
 
-    def timing(self, doc_id, sid, speed):
-        got = self._synth(doc_id, sid, speed)
+    def timing(self, doc_id, sid, speed, chunk_idx=None):
+        got = self._synth(doc_id, sid, speed, chunk_idx=chunk_idx)
         return got[1] if got else None
 
 SERVER = None
@@ -643,10 +666,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, s.sequence(q["from"], int(q.get("count", 20))))
                 if kind == "audio":
                     is_prefetch = q.get("prefetch", "0") in ("1", "true")
-                    wav = SERVER.audio(s.id, parts[4], float(q.get("speed", 1.0)), is_prefetch=is_prefetch)
+                    chunk_idx = int(q["chunk"]) if "chunk" in q and q["chunk"].isdigit() else None
+                    wav = SERVER.audio(s.id, parts[4], float(q.get("speed", 1.0)), is_prefetch=is_prefetch, chunk_idx=chunk_idx)
                     return self._send(200, wav, "audio/wav") if wav else self._send(404, {"error": "no sentence"})
                 if kind == "timing":
-                    t = SERVER.timing(s.id, parts[4], float(q.get("speed", 1.0)))
+                    chunk_idx = int(q["chunk"]) if "chunk" in q and q["chunk"].isdigit() else None
+                    t = SERVER.timing(s.id, parts[4], float(q.get("speed", 1.0)), chunk_idx=chunk_idx)
                     return self._send(200, t) if t else self._send(404, {"error": "no sentence"})
             return self._send(404, {"error": "not found"})
         except Exception as e:

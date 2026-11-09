@@ -19,6 +19,7 @@ first use, from the kokoro-onnx project's release.
 """
 import os
 import pathlib
+import re
 import threading
 
 import numpy as np
@@ -234,25 +235,51 @@ def ensure_files(model):
     return model
 
 
-def split_clauses(text, max_chars=130):
-    """Split long text into natural clauses of at most max_chars at word boundaries.
-    Text shorter than max_chars is returned as a single item.
+def split_clauses(text, first_chunk_max=48, other_chunk_max=80):
+    """Split long text into natural clauses and syntactic phrases.
+    The first chunk is targeted at first_chunk_max (~48 chars, 6-8 words) so
+    CPU neural synthesis finishes in ~1.0-1.1s for immediate playback on click.
+    Subsequent chunks use other_chunk_max (~80 chars) for smooth, natural phrasing.
+    Splits prefer:
+    1. Natural punctuation marks (, ; : — –)
+    2. Conjunctions and prepositions (that, which, using, where, with, and, for...)
+    3. Word boundaries
     """
-    if len(text) <= max_chars:
+    if len(text) <= first_chunk_max:
         return [text]
     words = text.split(" ")
     chunks = []
     cur = []
     cur_len = 0
+    limit = first_chunk_max
+
+    punc_re = re.compile(r"[,;:\u2014\u2013]$")
+    prep_set = {
+        "that", "which", "using", "where", "when", "while", "with", "without",
+        "and", "but", "or", "for", "by", "from", "into", "through", "during",
+        "including", "thereby", "because", "since", "although", "whereas"
+    }
+
     for w in words:
         w_len = len(w) + (1 if cur else 0)
-        if cur_len + w_len > max_chars and cur:
+        should_split = False
+        if cur:
+            if punc_re.search(cur[-1]) and (cur_len >= 20 or cur_len + w_len > limit):
+                should_split = True
+            elif (cur_len + w_len > limit * 0.7 or cur_len >= 32) and w.lower() in prep_set:
+                should_split = True
+            elif cur_len + w_len > limit:
+                should_split = True
+
+        if should_split and cur:
             chunks.append(" ".join(cur))
             cur = [w]
             cur_len = len(w)
+            limit = other_chunk_max
         else:
             cur.append(w)
             cur_len += w_len
+
     if cur:
         chunks.append(" ".join(cur))
     return chunks
@@ -272,7 +299,9 @@ class KokoroNarrator:
         self.model_name = model
 
         import onnxruntime as ort
-        threads = int(os.environ.get("PAPERVOICE_KOKORO_THREADS", "4"))
+        cpus = os.cpu_count() or 4
+        default_threads = min(6, cpus) if cpus >= 6 else cpus
+        threads = int(os.environ.get("PAPERVOICE_KOKORO_THREADS", str(default_threads)))
         so = ort.SessionOptions()
         so.intra_op_num_threads = threads
         so.inter_op_num_threads = 1
@@ -352,8 +381,9 @@ class KokoroNarrator:
         """PCM16 bytes. Natural sentence prosody; splits long sentences into natural clauses for sub-second latency."""
         if self._aborted.is_set():
             raise RuntimeError("Kokoro inference aborted")
-        max_chars = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "140"))
-        parts = split_clauses(text, max_chars=max_chars) if len(text) > max_chars else [text]
+        first_max = int(os.environ.get("PAPERVOICE_KOKORO_FIRST_CHUNK_CHARS", "48"))
+        other_max = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "80"))
+        parts = split_clauses(text, first_chunk_max=first_max, other_chunk_max=other_max)
         for part in parts:
             if self._aborted.is_set():
                 raise RuntimeError("Kokoro inference aborted")
@@ -363,12 +393,26 @@ class KokoroNarrator:
         """[(letters, PCM16 bytes, None)]. Synthesizes sentences with complete natural acoustic context."""
         if self._aborted.is_set():
             raise RuntimeError("Kokoro inference aborted")
-        max_chars = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "140"))
-        parts = split_clauses(text, max_chars=max_chars) if len(text) > max_chars else [text]
+        first_max = int(os.environ.get("PAPERVOICE_KOKORO_FIRST_CHUNK_CHARS", "48"))
+        other_max = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "80"))
+        parts = split_clauses(text, first_chunk_max=first_max, other_chunk_max=other_max)
         out = []
         for part in parts:
             if self._aborted.is_set():
                 raise RuntimeError("Kokoro inference aborted")
             out.append((list(part), self._pcm(part, pace), None))
         return out
+
+    def chunk(self, text, chunk_idx, pace=1.0):
+        """Synthesize only a single clause/chunk. Returns ([(letters, pcm, None)], total_chunks, part_text)."""
+        if self._aborted.is_set():
+            raise RuntimeError("Kokoro inference aborted")
+        first_max = int(os.environ.get("PAPERVOICE_KOKORO_FIRST_CHUNK_CHARS", "48"))
+        other_max = int(os.environ.get("PAPERVOICE_KOKORO_MAX_CHARS", "80"))
+        parts = split_clauses(text, first_chunk_max=first_max, other_chunk_max=other_max)
+        total = len(parts)
+        if chunk_idx is None or chunk_idx < 0 or chunk_idx >= total:
+            return self.chunks(text, pace), total, text
+        part = parts[chunk_idx]
+        return [(list(part), self._pcm(part, pace), None)], total, part
 
