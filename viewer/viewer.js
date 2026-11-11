@@ -607,11 +607,19 @@ async function fetchSequence(from, count = 25) {
 
 const player = {
   audio: new Audio(),
-  queue: [], idx: 0, gen: 0, playing: false, current: null, more: null, urls: new Map(), log: [], lastEnded: null,
+  queue: [], idx: 0, gen: 0, playing: false, current: null, more: null, urls: new Map(), ready: new Set(), log: [], lastEnded: null,
+  clickTarget: null, subChunk: null,
 
   cancelPrefetch() {
+    this.clickTarget = null;
+    this.subChunk = null;
     if (state.doc) {
       api(`/api/doc/${state.doc}/cancel`, { method: "POST" }).catch(() => {});
+    }
+    for (const key of Array.from(this.urls.keys())) {
+      if (!this.ready.has(key)) {
+        this.urls.delete(key);
+      }
     }
   },
 
@@ -623,22 +631,24 @@ const player = {
       status("Opening document…");
       await state.docReady;
       if (g !== this.gen) return;
+      try {
+        const h = await (await fetch("/api/health")).json();
+        if (!h.ready) {
+          status("Reading models are warming up in background… reading starts automatically.");
+        }
+      } catch {}
     }
-    try {
-      const h = await (await fetch("/api/health")).json();
-      if (!h.ready) {
-        status("Reading models are warming up in background… reading starts automatically.");
-      }
-    } catch {}
     status(`Finding the sentence on page ${page}…`);
     const q = locateQuery({ page, x, y, text, at, before, after });
     const { sentence } = await (await api(`/api/doc/${state.doc}/locate?${q}`)).json();
     if (g !== this.gen) return;
     if (!sentence) return status("Nothing to read after this point");
+    this.clickTarget = sentence;
     await this.startFrom(sentence, g);
   },
 
   async startFrom(sid, g = ++this.gen) {
+    if (!this.clickTarget) this.clickTarget = sid;
     const seq = await fetchSequence(sid);
     if (g !== this.gen) return;
     this.queue = seq;
@@ -655,10 +665,15 @@ const player = {
     setPlaying(true);
     status(`Page ${item.page} of ${state.pdf.numPages}`);
     const asked = performance.now();
+    this.clickTarget = null;
+    // If the complete full sentence audio is already finished and sitting in cache: use it! (0ms instant playback)
+    const hasFull = this.ready.has(item.id);
+    const chunkIdx = hasFull ? null : 0;
+    const useChunk = (chunkIdx !== null);
     let clip = null;
     for (let attempt = 0; attempt < 4 && !clip; attempt++) { // a busy server may drop a request: try again
       try {
-        clip = await this.url(item.id, false);
+        clip = await this.url(item.id, false, chunkIdx);
       } catch (err) {
         if (g !== this.gen) return;
         status(`Waiting for the reading engine… (${err.message})`);
@@ -668,6 +683,11 @@ const player = {
     if (g !== this.gen || !this.playing) return;
     if (!clip) return status("The reading engine is not answering - is papervoice-server running?");
     const { url, timing } = clip;
+    if (useChunk && timing.total_chunks > 1) {
+      this.subChunk = { id: item.id, next: 1, total: timing.total_chunks };
+    } else {
+      this.subChunk = null;
+    }
     // timeline for diagnosing gaps (window.pdfReader.player.log): when audio was asked for, ready, started
     this.log.push({ id: item.id, page: item.page, asked, ready: performance.now(), prevEnded: this.lastEnded });
     if (this.log.length > 400) this.log.shift();
@@ -681,24 +701,82 @@ const player = {
     }
     this.audio.playbackRate = state.speed; // instant pitch-preserved speed scaling in browser
     this.audio.play().catch(() => {});
-    for (let k = 1; k <= 3; k++) if (this.queue[this.idx + k]) this.url(this.queue[this.idx + k].id, true).catch(() => {});
+    // Strictly prefetch in sequential order so Sentence N+1 is always guaranteed ready first
+    (async () => {
+      if (this.subChunk && this.subChunk.id === item.id) {
+        for (let c = this.subChunk.next; c < this.subChunk.total; c++) {
+          if (g !== this.gen || !this.playing) return;
+          try { await this.url(item.id, true, c); } catch {}
+        }
+      }
+      for (let k = 1; k <= 2; k++) {
+        const nxt = this.queue[this.idx + k];
+        if (nxt && g === this.gen && this.playing) {
+          // Pre-fetch Chunk 0 of next sentence first for guaranteed instant transition!
+          try { await this.url(nxt.id, true, 0); } catch {}
+          try { await this.url(nxt.id, true); } catch {}
+        }
+      }
+    })();
     this.topUp(g);
   },
 
-  url(id, isPrefetch = false) {
+  async playNextChunk() {
+    if (!this.subChunk || !this.playing) return;
+    const g = this.gen;
+    const { id, next, total } = this.subChunk;
+    const item = this.current;
+    if (!item || item.id !== id) {
+      this.subChunk = null;
+      return this.next();
+    }
+    let clip = null;
+    try {
+      clip = await this.url(id, false, next);
+    } catch (err) {
+      if (g !== this.gen || !this.playing) return;
+      this.subChunk = null;
+      return this.next();
+    }
+    if (g !== this.gen || !this.playing || this.current !== item) return;
+    this.subChunk.next++;
+    if (this.subChunk.next >= total) {
+      this.subChunk = null;
+    }
+    const { url, timing } = clip;
+    this.audio.src = url;
+    if (state.cur?.item === item) {
+      state.cur.timing = timing;
+      state.cur.wi = 0;
+      prepareTiming();
+    }
+    this.audio.playbackRate = state.speed;
+    this.audio.play().catch(() => {});
+  },
+
+  url(id, isPrefetch = false, chunkIdx = null) {
     // the sentence's audio and its word timing (for word-by-word highlighting), fetched once and played at state.speed
-    if (!this.urls.has(id)) {
+    const cacheKey = chunkIdx != null ? `${id}#${chunkIdx}` : id;
+    if (!this.urls.has(cacheKey)) {
       const q = encodeURIComponent(id);
-      const prefetchArg = isPrefetch ? "?prefetch=1" : "";
-      this.urls.set(id, Promise.all([
-        api(`/api/doc/${state.doc}/audio/${q}${prefetchArg}`).then((r) => r.blob()).then((b) => URL.createObjectURL(b)),
-        api(`/api/doc/${state.doc}/timing/${q}`).then((r) => r.json()),
-      ]).then(([url, timing]) => ({ url, timing })).catch((err) => {
-        this.urls.delete(id); // do not keep a failure: the next attempt asks again
+      const params = new URLSearchParams();
+      if (chunkIdx != null) params.set("chunk", chunkIdx);
+      if (isPrefetch) params.set("prefetch", "1");
+      const audioQuery = params.toString() ? `?${params.toString()}` : "";
+      const timingQuery = chunkIdx != null ? `?chunk=${chunkIdx}` : "";
+      this.urls.set(cacheKey, Promise.all([
+        api(`/api/doc/${state.doc}/audio/${q}${audioQuery}`).then((r) => r.blob()).then((b) => URL.createObjectURL(b)),
+        api(`/api/doc/${state.doc}/timing/${q}${timingQuery}`).then((r) => r.json()),
+      ]).then(([url, timing]) => {
+        this.ready.add(cacheKey);
+        return { url, timing };
+      }).catch((err) => {
+        this.urls.delete(cacheKey); // do not keep a failure: the next attempt asks again
+        this.ready.delete(cacheKey);
         throw err;
       }));
     }
-    return this.urls.get(id);
+    return this.urls.get(cacheKey);
   },
 
   async topUp(g) {
@@ -743,6 +821,7 @@ const player = {
     this.idx = Math.max(0, Math.min(this.queue.length - 1, this.idx + delta));
     this.playing = true;
     this.audio.pause();
+    this.clickTarget = this.queue[this.idx]?.id || null;
     this.play(++this.gen);
   },
 
@@ -756,12 +835,20 @@ const player = {
     this.playing = false;
     for (const u of this.urls.values()) u.then((x) => URL.revokeObjectURL(x.url)).catch(() => {});
     this.urls.clear();
+    this.ready.clear();
     state.blockCursor = null;
     clearHighlight();
     setPlaying(false);
   },
 };
-player.audio.addEventListener("ended", () => { player.lastEnded = performance.now(); player.next(); });
+player.audio.addEventListener("ended", () => {
+  player.lastEnded = performance.now();
+  if (player.subChunk && player.current && player.subChunk.id === player.current.id) {
+    player.playNextChunk();
+  } else {
+    player.next();
+  }
+});
 player.audio.addEventListener("playing", () => {
   const last = player.log[player.log.length - 1];
   if (last && last.started == null) last.started = performance.now();

@@ -69,7 +69,7 @@ class Session:
     def __init__(self, doc_id, pdf_path, engine, name):
         from pdf_reader.stream import PageStreamer
         self.id, self.name = doc_id, name
-        self.streamer = PageStreamer(pdf_path, engine=engine, index_all=True, cache_dir=CACHE / doc_id)
+        self.streamer = PageStreamer(pdf_path, engine=engine, index_all=False, prefetch=1, cache_dir=CACHE / doc_id)
         self.n_pages = self.streamer.n_pages
 
     def page(self, p, wait=True, priority=False):
@@ -481,7 +481,7 @@ class Server:
 
         # Give 100% CPU to speech synthesis by pausing background document indexing
         streamer = getattr(session, "streamer", None)
-        if streamer and not is_prefetch:
+        if streamer:
             streamer.pause(True)
 
         total_chunks = 1
@@ -512,7 +512,7 @@ class Server:
                     gap = self.narrator.silence(0.02)
                 rate = self.narrator.rate
         finally:
-            if streamer and not is_prefetch:
+            if streamer:
                 streamer.pause(False)
         speech = b"".join(a for _, a, _ in chunks)
         pcm = speech + gap
@@ -568,6 +568,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(data)
 
