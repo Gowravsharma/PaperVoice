@@ -52,11 +52,13 @@ ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "out" / "cache"
 CODE_VERSION = __import__("pdf_reader.native_host", fromlist=["code_version"]).code_version()  # as started
 VIEWER = ROOT / "viewer"  # the reading page (index.html, viewer.js, viewer.css)
+ICONS = ROOT / "extension" / "icons"  # application logos & tab favicons
 PDFJS = VIEWER / "node_modules" / "pdfjs-dist" / "build"  # npm install in viewer/
 LAST_REQUEST = [time.monotonic()]  # any accepted request (the viewer pings every minute while it is open)
 AUDIO_CACHE_BYTES = 48 * 2**20  # ~9 minutes of speech at 22 kHz, 16-bit
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".mjs": "text/javascript",
-                ".css": "text/css", ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png"}
+                ".css": "text/css", ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
+                ".ico": "image/x-icon"}
 
 
 def letters(s):
@@ -628,6 +630,10 @@ class Handler(BaseHTTPRequestHandler):
             parts = url.path.strip("/").split("/")
             if url.path in ("/", "/index.html"):
                 return self._static(VIEWER, "index.html")
+            if url.path == "/favicon.ico":
+                return self._static(ICONS, "papervoice.ico")
+            if parts[0] == "icons":
+                return self._static(ICONS, "/".join(parts[1:]))
             if parts[0] == "viewer":
                 return self._static(VIEWER, "/".join(parts[1:]))
             if parts[0] == "pdfjs":
@@ -679,8 +685,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": repr(e)})
 
 
+def _setup_windows_icon():
+    """Set Windows AppUserModelID and console window title & icon so Taskbar and Task Manager display PaperVoice."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        app_id = "PaperVoice.Reader.Server"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        ctypes.windll.kernel32.SetConsoleTitleW("PaperVoice Server")
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        ico_file = (ROOT / "extension" / "icons" / "papervoice.ico").resolve()
+        if hwnd and ico_file.is_file():
+            IMAGE_ICON = 1
+            LR_LOADFROMFILE = 0x00000010
+            WM_SETICON = 0x0080
+            hicon_big = ctypes.windll.user32.LoadImageW(None, str(ico_file), IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+            hicon_small = ctypes.windll.user32.LoadImageW(None, str(ico_file), IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+            if hicon_big:
+                ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, 1, hicon_big)
+            if hicon_small:
+                ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, 0, hicon_small)
+    except Exception:
+        pass
+
+
 def main():
     global SERVER
+    _setup_windows_icon()
     from pdf_reader.models import report_crashes
     report_crashes()
     ap = argparse.ArgumentParser(description="Local server for the PDF reader viewer / extension")
