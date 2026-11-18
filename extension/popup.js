@@ -1,6 +1,6 @@
 // popup.js - send the PDF in the current tab to the local reading engine and open the read-along viewer.
 // Permissions: activeTab (read the current tab's PDF, only when the icon is clicked) and the local server.
-const SERVER = "http://127.0.0.1:8765";
+const SERVER = "http://127.0.0.1:18765";
 const $ = (id) => document.getElementById(id);
 
 function say(text) {

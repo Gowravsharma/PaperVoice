@@ -6,7 +6,7 @@ native_host.py - lets the browser extension start the reading engine, so nobody 
 
 Browsers allow an extension to start a program only through "native messaging": a registered helper that the
 browser launches and talks to over stdin/stdout (4-byte length + JSON). This helper understands one message,
-{"cmd": "start"}: if the reading engine is not answering on 127.0.0.1:8765 it starts papervoice-server in the
+{"cmd": "start"}: if the reading engine is not answering on 127.0.0.1:18765 it starts papervoice-server in the
 background (no window, detached from the browser so it keeps running), and replies. The server stops by itself
 after 20 minutes without use (server.py --idle-exit), freeing its memory; the next click starts it again.
 
@@ -26,7 +26,7 @@ from pathlib import Path
 
 HOST_NAME = "com.papervoice.reader"
 EXTENSION_ID = "fininfbbcceiipeicgnhagiefcldlcom"
-SERVER_URL = "http://127.0.0.1:8765"
+SERVER_URL = "http://127.0.0.1:18765"
 ROOT = Path(__file__).resolve().parents[2]
 LOG = ROOT / "out" / "server.log"
 HOME = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "PaperVoice"
