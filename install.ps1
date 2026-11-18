@@ -70,7 +70,7 @@ function Get-Version($app) {
 }
 function Stop-Engine {
   # a running engine holds files of the install (python.exe in .venv) that an update replaces
-  try { Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8765/api/shutdown" -TimeoutSec 3 | Out-Null; Start-Sleep -Seconds 2 } catch { }
+  try { Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:18765/api/shutdown" -TimeoutSec 3 | Out-Null; Start-Sleep -Seconds 2 } catch { }
 }
 function Newer-Available($app) {
   # $true / $false: is there a newer version than this copy? A git copy compares commits (so a fix pushed without a

@@ -1,7 +1,7 @@
 """
 server.py - local companion server for the PDF viewer / browser extension (localhost only).
 
-    uv run papervoice-server [--port 8765]
+    uv run papervoice-server [--port 18765]
 
 The browser shows the PDF and highlights; this process does the heavy work (Docling, formula model, voice).
 Nothing leaves the machine: it listens on 127.0.0.1 only.
@@ -393,10 +393,12 @@ class Server:
         te = threading.Thread(target=load_doc_engine, daemon=True)
         tv.start()
         te.start()
-        tv.join()
-        te.join()
-        self.ready.set()
-        print(f"All engines fully initialized in {time.perf_counter() - t:.1f}s; ready", flush=True)
+        def wait_and_ready():
+            tv.join()
+            te.join()
+            self.ready.set()
+            print(f"All engines fully initialized in {time.perf_counter() - t:.1f}s; ready", flush=True)
+        threading.Thread(target=wait_and_ready, daemon=True).start()
 
     def open(self, data=None, path=None, name=None):
         # Technique 2: Instant Asynchronous PDF Rendering - do not block on self.ready.wait()!
@@ -717,7 +719,7 @@ def main():
     from pdf_reader.models import report_crashes
     report_crashes()
     ap = argparse.ArgumentParser(description="Local server for the PDF reader viewer / extension")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=18765)
     ap.add_argument("--idle-exit", type=float, default=20,
                     help="quit after this many minutes without any request (0: never). Open reader tabs keep it "
                          "alive; the browser extension starts it again when needed (papervoice-setup)")

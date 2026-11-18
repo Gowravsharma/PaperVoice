@@ -195,7 +195,7 @@ There is no server to start: the extension starts the reading engine in the back
 start takes ~15-30 s), and it stops by itself 20 minutes after the last reader tab is closed, to free its memory
 (**Stop the reading engine** in the extension's popup stops it at once). After an update, the next click on the
 icon replaces an engine that is still running the old code. Without the extension (or on macOS/Linux): `uv run papervoice-server`, then go to
-<http://127.0.0.1:8765> and open or drop a PDF there.
+<http://127.0.0.1:18765> and open or drop a PDF there.
 
 **Ctrl+click** anywhere in the text to start reading from that sentence (a plain click selects text as usual). Keyboard: `Space` play/pause, `←`/`→` previous/next
 sentence, `+`/`-` speed, `H` highlight: sentence / word / off, `Ctrl` `+`/`-`/`0` or `Ctrl`+scroll: zoom (pages are
